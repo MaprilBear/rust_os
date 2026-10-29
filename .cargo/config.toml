@@ -1,0 +1,9 @@
+[build]
+target = "thumbv7em-none-eabihf"
+
+[target.thumbv7em-none-eabihf]
+# `cargo run` inside the container boots the kernel in Renode (nRF52840).
+runner = "sh renode/run.sh"
+rustflags = [
+    "-C", "link-arg=-Tlink.ld",
+]

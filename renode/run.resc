@@ -1,0 +1,2 @@
+include @renode/common.resc
+start

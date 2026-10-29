@@ -1,0 +1,4 @@
+include @renode/common.resc
+
+# `true` = start emulation as soon as GDB connects.
+machine StartGdbServer 3334 true

@@ -1,0 +1,35 @@
+{
+  "name": "nRF52840 Rust OS",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
+  "mounts": [
+    "source=nrf52840-cargo-home,target=/cargo-home,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.target": "thumbv7em-none-eabihf",
+        "rust-analyzer.cargo.allTargets": false,
+        "rust-analyzer.check.command": "clippy",
+        "rust-analyzer.check.allTargets": false,
+        "files.watcherExclude": {
+          "**/target/**": true
+        },
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer",
+          "editor.formatOnSave": true
+        }
+      }
+    }
+  }
+}

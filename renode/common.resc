@@ -1,0 +1,16 @@
+:name: nRF52840 kernel
+:description: Shared machine setup for run.resc and debug.resc
+
+# Path to the ELF; override with `-e "$bin=@path"` (see run.sh) or edit here.
+$bin?=@target/thumbv7em-none-eabihf/debug/kernel
+
+mach create "nrf52840"
+machine LoadPlatformDescription @renode/nrf52840.repl
+
+# Headless mode prints UART0 output into the log. For an interactive session
+# on the UART, use `uart_connect sysbus.uart0` in the monitor, or expose it:
+#   emulation CreateServerSocketTerminal 12345 "term"
+#   connector Connect sysbus.uart0 term
+showAnalyzer sysbus.uart0
+
+sysbus LoadELF $bin

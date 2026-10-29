@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Renode Cortex-Debug (Rust Kernel)",
+            "type": "cortex-debug",
+            "request": "launch",
+            // 1. Point to your compiled Rust ELF
+            "executable": "${workspaceFolder}/target/thumbv7em-none-eabihf/debug/kernel",
+            "cwd": "${workspaceFolder}",
+            // 2. Connect to the port specified in your debug.resc
+            "servertype": "external",
+            "gdbTarget": "127.0.0.1:3334", 
+            "gdbPath": "/usr/bin/gdb-multiarch",
+            // 3. Define the target architecture properties
+            "device": "nRF52840_XXAA",
+            // 4. Point to the downloaded SVD file
+            "svdFile": "${workspaceFolder}/renode/nrf52840.svd", 
+            "runToEntryPoint": "main", // Automatically tries to halt at your main function
+            "showDevDebugOutput": "none",
+        }
+    ]
+}

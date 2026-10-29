@@ -1,0 +1,9 @@
+// Platform description for the kernel: Renode's stock nRF52840 SoC.
+//
+// Provides (see platforms/cpus/nrf52840.repl in the Renode install):
+//   Cortex-M4 + NVIC @ 0xE000E000, flash 1 MiB @ 0x0, RAM 256 KiB @ 0x20000000,
+//   UARTE0 @ 0x40002000, UARTE1 @ 0x40028000, RTC0-2, TIMER0-4, GPIO P0/P1,
+//   GPIOTE, TWI, SPI, PPI, EGU0-5, RNG, ECB, RADIO, I2S, PDM, WDT, CLOCK.
+//
+// Add board-level things (LEDs, buttons, extra devices) below this line.
+using "platforms/cpus/nrf52840.repl"
