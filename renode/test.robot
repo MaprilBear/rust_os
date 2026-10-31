@@ -13,11 +13,13 @@ Create Machine
     Execute Command    mach create "nrf52840"
     Execute Command    machine LoadPlatformDescription @${CURDIR}/nrf52840.repl
     Execute Command    sysbus LoadELF @${ELF}
-    Create Terminal Tester    sysbus.uart0
+    # The kernel prints through the debug console peripheral (src/debugcon.rs),
+    # which writes to Renode's log, so watch the log rather than a UART.
+    Create Log Tester    5
 
 *** Test Cases ***
-Kernel Prints Banner On UART0
-    [Documentation]    Fails until the kernel writes "kernel booted" to UARTE0.
+Kernel Prints Banner On Debug Console
+    [Documentation]    Passes once the kernel prints "kernel booted" with dprintln!.
     Create Machine
     Start Emulation
-    Wait For Line On Uart    kernel booted    timeout=5
+    Wait For Log Entry    debugcon: kernel booted

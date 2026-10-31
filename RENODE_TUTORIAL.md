@@ -35,9 +35,8 @@ renode/
 ## 3. First run
 
 ```
-make image        # once; downloads Renode into the image
 make build
-make run
+make run          # run these in a terminal inside the dev container
 ```
 
 You will see Renode's log lines (it prints a lot at startup), then a prompt like
@@ -90,6 +89,12 @@ On the nRF52840, UART0 in the Renode platform is the **UARTE** with EasyDMA
 set `TXD.PTR` and `TXD.MAXCNT`, trigger `TASKS_STARTTX`, then wait for
 `EVENTS_ENDTX`. Remember the buffer must be in RAM, not flash.
 
+**Quick alternative: the debug console.** If you just want to print while
+debugging and don't want to write a UART driver yet, use `dprintln!` (see
+`PROJECT_SETUP.md`, Step 12). It writes to a made-up Renode peripheral and the
+text appears in the log as `debugcon: <line>`, with no UART setup. The rest of
+this section is about the real UARTE.
+
 Three ways to read it:
 
 1. **Log (default here).** `showAnalyzer sysbus.uart0` in `common.resc` makes
@@ -100,9 +105,8 @@ Three ways to read it:
    emulation CreateServerSocketTerminal 12345 "term"
    connector Connect sysbus.uart0 term
    ```
-   then `nc localhost 12345` on the host (`make run` uses the default Docker
-   network, so for this add `-p 12345:12345` to the `docker run` line, or use
-   `--network host`).
+   then run `nc localhost 12345` in another terminal inside the dev container
+   (to reach it from the host, forward port 12345 in VS Code's Ports panel).
 
 You can also write UART output to a file:
 `uart CreateFileBackend @uart_file` (run on the UART peripheral in the Monitor).
@@ -161,7 +165,9 @@ repo root and are git-ignored.
 
 Useful keywords: `Wait For Line On Uart`, `Wait For Prompt On Uart`,
 `Write Line To Uart`, `Execute Command`, `Start Emulation`, `Pause Emulation`,
-`Reset Emulation`. Because virtual time is deterministic, these tests are not
+`Reset Emulation`. For kernel output sent through the debug console (which goes
+to the Renode log, not a UART), use `Create Log Tester` and `Wait For Log Entry`
+instead, as `renode/test.robot` does. Because virtual time is deterministic, these tests are not
 flaky the way real-hardware tests are.
 
 ## 8. What the platform gives you (and what it does not)
@@ -207,8 +213,8 @@ implements it as part of its NVIC model. Verify it early by reading
 - **SVD file.** The stock platform applies the nRF52840 SVD (register
   definitions) from a URL. The `Dockerfile` downloads it once at image build time
   and rewrites `/opt/renode/platforms/cpus/nrf52840.repl` to use the local copy
-  at `/opt/renode/svd/NRF52840.svd`, so `make run` works offline. `make image`
-  needs internet, and fails if the stock platform's URL ever changes. After
+  at `/opt/renode/svd/NRF52840.svd`, so `make run` works offline. Building the
+  image needs internet, and fails if the stock platform's URL ever changes. After
   upgrading `RENODE_VERSION`, check that step still matches.
 - **Virtual time.** Busy-wait delays finish as fast as the host can execute
   them. For a timer-driven kernel, test with RTC/TIMER events rather than
@@ -219,8 +225,8 @@ implements it as part of its NVIC model. Verify it early by reading
 
 ## 10. Upgrading and running both simulators
 
-- Upgrade Renode: change `RENODE_VERSION` in the `Dockerfile` and run
-  `make image`. Release notes: https://github.com/renode/renode/releases
+- Upgrade Renode: change `RENODE_VERSION` in the `Dockerfile` and rebuild the dev
+  container ("Dev Containers: Rebuild Container"). Release notes: https://github.com/renode/renode/releases
 - `make qemu` / `make qemu-debug` run the same ELF on QEMU's generic Cortex-M4
   board (`mps2-an386`). It has none of the nRF peripherals, so it only tells you
   whether core-level behaviour (exceptions, MPU, FPU) agrees between two

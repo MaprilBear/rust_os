@@ -413,9 +413,9 @@ changes were made:
 
 **How to use it.**
 
-1. Rebuild the image once so it contains rust-analyzer and the `dev` user:
-   `make image`. (Opening the dev container also builds it, so this just saves
-   time.)
+1. Nothing to build by hand: opening the dev container builds the image from
+   the `Dockerfile` (cached afterwards). If you changed the `Dockerfile`, use the
+   command **"Dev Containers: Rebuild Container"**.
 2. In VS Code, install the **Dev Containers** extension, open this folder, and
    run the command **"Dev Containers: Reopen in Container"**. The first open
    builds the image (cached afterwards) and installs the extensions in the
@@ -423,22 +423,12 @@ changes were made:
 3. Open `src/main.rs`. rust-analyzer starts and indexes. Hover and
    go-to-definition into `core` should work.
 
-**What changes in your workflow.** The `make` targets call `docker run`, and
-Docker is not available *inside* the dev container, so run the underlying
-commands directly in the VS Code terminal there:
-
-| On the host | Inside the dev container |
-|---|---|
-| `make build` | `cargo build` |
-| `make run` | `cargo build && renode --disable-gui --console renode/run.resc` (or just `cargo run`) |
-| `make debug` | `cargo build && renode --disable-gui --console renode/debug.resc` |
-| `make gdb` (second terminal) | `gdb-multiarch target/thumbv7em-none-eabihf/debug/kernel -ex "target remote localhost:3333"` |
-| `make test` | `cargo build && renode-test renode/test.robot` |
-| `make clippy` / `make fmt` | `cargo clippy` / `cargo fmt` |
-
-GDB and Renode run in the same container, so `localhost:3333` just works and no
-`--network host` is needed. Either workflow is fine and they share the same
-cargo cache volume, so you can mix them.
+**What changes in your workflow.** Docker is not available *inside* the dev
+container, and the original Makefile worked by calling `docker run`. So the
+Makefile was changed (Step 11) to assume it is already running inside the
+container: open a terminal in VS Code and use `make build`, `make run`, and so
+on directly. GDB and Renode run in the same container, so `localhost:3333` just
+works and no `--network host` is needed.
 
 **Not using VS Code?** The `devcontainer.json` is a standard format. The
 `devcontainer` CLI can build and start the same container for other editors, and
@@ -446,6 +436,135 @@ you can point an editor's language-server setting at the container's
 `rust-analyzer` (for example by running it through `docker exec`). The extension
 list and settings in the file are VS Code specific, so copy the `rust-analyzer.*`
 settings into your editor's equivalent.
+
+### Step 11: A Makefile for inside the container, and printing to the console
+
+**Makefile.** The original Makefile wrapped every command in `docker run`,
+because the plan was to work from your host. Once the dev container existed, that
+no longer made sense: Docker is not available inside it, and you are already in
+the right environment. So the `docker run` prefix and the `image` and `shell`
+targets were removed, and every target is now the plain command (`make build` is
+`cargo build`, `make run` is `cargo build` then Renode, and so on). The
+container-only `-it`, `--user`, `-v` and `--network host` flags are no longer
+needed. A comment at the top of the file keeps the one-line `docker run`
+equivalent in case you ever want to run a target from the host.
+
+**Printing from the kernel.** You asked how to print from the OS to the Renode
+console. There is no special "console" call on a microcontroller: you write
+bytes to a serial port (the UART), and the simulator shows what comes out of it.
+The pieces:
+
+1. **The kernel writes to UARTE0.** `src/uart.rs` configures the nRF52840's UARTE0
+   peripheral (at address `0x40002000`, the same address as on the real chip),
+   then sends text through it. The UARTE sends data using **EasyDMA**: you write
+   a pointer to a buffer and a length into its registers, trigger the "start
+   transmit" task, and the hardware reads the bytes out of RAM itself. The code
+   then waits for the "end of transmit" event before sending the next chunk.
+2. **The buffer must be in RAM.** String literals like `"kernel booted"` are
+   stored in flash, and EasyDMA is only allowed to read from RAM. So the code
+   copies the text into a 64-byte buffer on the stack and sends it in chunks of
+   up to 64 bytes.
+3. **`print!` and `println!` are provided.** `uart.rs` implements Rust's
+   `core::fmt::Write` for a small `Uart` type, so formatting works the way you
+   expect: `println!("tick {}", n)`. `main.rs` loads them with `#[macro_use] mod
+   uart;`. There is no heap involved.
+4. **Renode shows the UART output.** `renode/common.resc` contains `showAnalyzer
+   sysbus.uart0`. When Renode runs without a GUI (as `make run` does), a UART
+   analyzer prints what the UART transmits into Renode's log in the terminal.
+5. **Panics print too.** The panic handler now prints `PANIC: <message and
+   location>` before looping, so a failed `unwrap` or array index is visible
+   instead of a silent hang.
+
+`Reset` now calls `uart::init()` and prints `kernel booted`. That is exactly the
+line `renode/test.robot` waits for, so `make test` should now pass. It needs no
+`.data` or `.bss` setup, because the UART code uses only the stack and fixed
+hardware addresses, so it works even before you write your real bring-up.
+
+Things to know:
+
+- **Pins.** `init()` selects pin P0.06 for TX (the pin wired to the USB serial
+  port on the nRF52840 development kit) and leaves the other pins disconnected.
+  Renode does not care which pin you pick, but real hardware does: change
+  `TX_PIN` in `uart.rs` for your board.
+- **It blocks.** `write_bytes` spins until the hardware reports the chunk sent.
+  If the UART is not enabled or the address is wrong, the kernel hangs at the
+  first print. If that happens, pause Renode and check `sysbus.cpu PC`: it will
+  be inside the `while read_reg(EVENTS_ENDTX) == 0` loop.
+- **Interactive view.** For a raw, character-by-character view instead of log
+  lines, type `uart_connect sysbus.uart0` at the Renode prompt (press `Esc` to
+  go back). The tutorial also shows how to expose the UART on a TCP port.
+- **Semihosting is not used.** Semihosting is another way to print, but it is
+  QEMU-oriented, and it is not clear how to enable it in Renode, so the UART path
+  is the dependable one.
+
+> **Update:** Step 12 switched the kernel's default printing from this UART code
+> to a simpler debug console. `src/uart.rs` is still in the repo for when you
+> write your real UART driver, but `main.rs` no longer includes it. The UART
+> notes above still describe how that code works.
+
+### Step 12: A quick-and-dirty debug console (no UART)
+
+**The request.** You plan to write your own UART driver later and wanted a way
+to print for debugging without using any of the chip's peripherals, by calling
+out to the emulator directly.
+
+**What was looked into.**
+
+- **Semihosting** is the standard "call out to the host" mechanism: the program
+  executes a special instruction and the debugger or emulator prints for it. It
+  is already enabled for QEMU in `make qemu`. For Renode it is not a dependable
+  choice here: the Renode 1.17.0 release notes say semihosting calls such as
+  `SYS_WRITE` were added for Arm, but no documentation was found for how to turn
+  it on for a Cortex-M machine, and the only lead is an unanswered community
+  question about a `UART.SemihostingUart` peripheral. It would also need a
+  special instruction in your code, which touches the assembly-level work you
+  said to leave alone for now.
+- **A custom peripheral in Renode** is documented and fully under your control.
+  Renode lets you declare a peripheral whose behaviour is a short Python script.
+  So we made up a one-register device that does not exist on the real chip.
+
+**What was built.**
+
+1. **`renode/debugcon.py`** is the script. Whenever the CPU writes a value to the
+   peripheral, it takes the low byte, adds it to a line buffer, and when it sees a
+   newline (`\n`) prints the line to the Renode log as `debugcon: <your text>`.
+2. **`renode/nrf52840.repl`** now declares the peripheral at address
+   `0x60000000` (a 4-byte `Python.PythonPeripheral` using that script). That
+   address is unused on the nRF52840 in this platform.
+3. **`src/debugcon.rs`** is the kernel side: a function that writes a byte to
+   `0x60000000`, and two macros, `dprint!` and `dprintln!`, that work like
+   `print!` and `println!`: `dprintln!("tick {}", n)`. It needs no setup, so it
+   works from the first instruction of `Reset`, before `.data`, `.bss`, the clock
+   or any pins are configured.
+4. **`src/main.rs`** now prints `kernel booted` with `dprintln!`, and the panic
+   handler prints `PANIC: ...` the same way.
+5. **`renode/test.robot`** now waits for the log line `debugcon: kernel booted`
+   using Renode's log tester (`Create Log Tester`, `Wait For Log Entry`) instead
+   of a UART terminal tester.
+
+**Keeping it off the real chip.** On a real nRF52840 nothing exists at
+`0x60000000`, so writing there would cause a bus fault. The macros are therefore
+controlled by a Cargo feature named `debugcon`, which is on by default
+(`Cargo.toml` has `default = ["debugcon"]`). For hardware, build with
+`cargo build --no-default-features`; the macros then compile to nothing. (The
+check is `if cfg!(feature = "debugcon")`, so the arguments are still type-checked
+either way.)
+
+**Things to know.**
+
+- **Output appears per line.** Nothing shows until a `\n` is sent, so use
+  `dprintln!`, and if you use `dprint!` finish the line yourself.
+- **Braces are safe.** The script logs with `self.InfoLog("{0}", line)` rather than
+  putting your text in the format string, so output like `Foo { a: 1 }` cannot
+  break Renode's log formatting.
+- **It is slow-ish.** Each byte is a separate simulated bus write that runs a
+  Python script. That is fine for debug prints but not for printing megabytes.
+- **The script path.** The `.repl` refers to the script as `renode/debugcon.py`,
+  relative to where Renode is started (the repo root, which is what the Makefile
+  does). If Renode says it cannot find the file, change it to an absolute path
+  such as `/work/renode/debugcon.py`.
+- **Use your own UART later.** When your driver exists, you can keep both: the
+  debug console stays handy for early boot, before the UART is configured.
 
 ---
 
@@ -467,8 +586,11 @@ rust_os/
 │   └── config.toml
 ├── src/
 │   ├── main.rs
+│   ├── debugcon.rs
+│   ├── uart.rs           (kept for reference, not compiled in)
 │   └── vectors.rs
 └── renode/
+    ├── debugcon.py
     ├── nrf52840.repl
     ├── common.resc
     ├── run.resc
@@ -503,27 +625,24 @@ Builds the development image, `nrf52840-os-dev`. It starts from `rust:1-trixie`
 7. **`CARGO_HOME=/cargo-home`, world-writable:** the container runs as *your*
    user id (not root) so build output is not root-owned on your disk. Cargo needs
    a writable home directory for its downloaded crates cache, so this is a
-   directory anyone can write to. The Makefile backs it with a persistent Docker
-   volume.
-8. **A `dev` user (UID 1000):** used only by the dev container. The Makefile
-   still runs everything with `--user <your uid>` and ignores it.
+   directory anyone can write to. The dev container backs it with a persistent
+   Docker volume (`nrf52840-cargo-home`).
+8. **A `dev` user (UID 1000):** the user the dev container runs as. VS Code
+   remaps its UID to match yours.
 
 ### `Makefile`
 
-Every command runs inside the container. The shared prefix, `DOCKER_RUN`, does:
+The Makefile assumes it is running **inside the container** (the dev container),
+where `cargo`, `renode`, `renode-test`, `qemu-system-arm` and `gdb-multiarch` are
+all on the `PATH`. Each target is just the plain command, for example `make run`
+runs `cargo build` and then `renode --disable-gui --console renode/run.resc`.
+Targets are listed in section 6.
 
-| Flag | Why |
-|---|---|
-| `--rm` | delete the container when it exits |
-| `-it` | interactive terminal (needed for Renode's prompt and GDB) |
-| `--user $(id -u):$(id -g)` | run as you, so files are not owned by root |
-| `-e HOME=/tmp` | a writable home directory for tools like Renode |
-| `-v $(CURDIR):/work` | mount your project into the container |
-| `-v nrf52840-cargo-home:/cargo-home` | persistent cargo cache between runs |
-| `-w /work` | start in the project directory |
-
-Targets are listed in section 6. `debug` and `gdb` use `--network host` so the
-GDB port (3333) is reachable from `localhost` and between containers.
+It sets three variables: `ELF` (the path to the built kernel, derived from the
+target triple and the `PROFILE` variable, `debug` by default), and `GDB_PORT`
+(3333, used by `make gdb`). The first lines of the file contain a `docker run`
+one-liner for running any target from the host if you ever need to; it is only a
+comment, not part of the build.
 
 ### `Cargo.toml`
 
@@ -575,9 +694,27 @@ The linker script. It declares:
 
 ### `src/main.rs`
 
-A minimal `#![no_std]`, `#![no_main]` program. It includes `mod vectors;`,
-defines a placeholder `Reset` function (an infinite loop, for you to replace with
-real bring-up), and a `#[panic_handler]` that loops forever.
+A minimal `#![no_std]`, `#![no_main]` program. It includes `mod debugcon;` (with
+`#[macro_use]`, so `dprint!`/`dprintln!` work) and `mod vectors;`. It defines a
+placeholder `Reset` function that prints `kernel booted` and loops (replace it
+with real bring-up), and a `#[panic_handler]` that prints `PANIC: ...` and then
+loops.
+
+### `src/debugcon.rs`
+
+The kernel side of the debug console (Step 12): `putc()` writes one byte to the
+made-up peripheral at `0x60000000`, a `DebugCon` type implements
+`core::fmt::Write`, and the `dprint!`/`dprintln!` macros use it. Gated by the
+`debugcon` Cargo feature so it can be compiled out for real hardware.
+
+### `src/uart.rs`
+
+**Not compiled in since Step 12** (`main.rs` has no `mod uart;`); kept as a
+starting point for your own UART driver. A small blocking transmit driver for
+UARTE0 plus the `print!` and `println!` macros (Step 11). `init()` sets the pins, baud rate (115200) and enables the
+peripheral; `write_bytes()` sends data through EasyDMA in 64-byte chunks from a
+RAM buffer; `Uart` implements `core::fmt::Write`. The register offsets are at the
+top of the file with the datasheet names.
 
 ### `src/vectors.rs`
 
@@ -616,6 +753,13 @@ with NVIC, 1 MiB flash at `0x0`, 256 KiB RAM at `0x20000000`, UARTE0/1, RTC0-2,
 TIMER0-4, GPIO P0/P1, GPIOTE, TWI, SPI, PPI, EGU0-5, RNG, ECB, radio, I2S, PDM,
 WDT, CLOCK). It exists as its own file so you have a place to add board-level
 devices (LEDs, buttons, extra stubs) without touching Renode's installation.
+Since Step 12 it also declares the `debugcon` Python peripheral at `0x60000000`.
+
+### `renode/debugcon.py`
+
+The behaviour of the debug-console peripheral (Step 12): collects written bytes
+into a line and prints the line to the Renode log as `debugcon: <line>` when a
+newline arrives.
 
 ### `renode/common.resc`
 
@@ -645,10 +789,11 @@ launches Renode headless with `$bin` set to that ELF and includes `run.resc`.
 ### `renode/test.robot`
 
 An automated test using Renode's Robot Framework integration. It creates the
-machine, loads the ELF, attaches a terminal tester to UART0, starts the CPU, and
-waits up to 5 seconds of *virtual* time for the line `kernel booted`. It
-**fails on purpose until your kernel prints that line**, which makes it a natural
-first milestone.
+machine, loads the ELF, creates a log tester, starts the CPU, and waits for the
+Renode log line `debugcon: kernel booted`, which the kernel's `dprintln!`
+produces (Step 12). It was written to fail until the kernel prints that line;
+the kernel now does, so it should pass. Keep it as a regression test and add
+more.
 
 ### `RENODE_TUTORIAL.md`
 
@@ -659,12 +804,13 @@ options, GDB sessions, writing tests, the peripheral map, and bring-up gotchas.
 
 ## 6. Command reference
 
-Run all of these from the repo root on your host (they call Docker for you).
+Run all of these from the repo root, in a terminal **inside the dev container**.
+(There is no `make image` or `make shell` any more; the dev container builds the
+image for you and its terminal is the shell.)
 
 | Command | What it does |
 |---|---|
-| `make image` | Build the Docker image. Needs internet. Do this once, and again after changing the Dockerfile. |
-| `make build` | `cargo build` (debug) inside the container. |
+| `make build` | `cargo build` (debug). |
 | `make release` | `cargo build --release`. |
 | `make run` | Build, then boot the kernel on the simulated nRF52840 in Renode. You get a `(nrf52840)` prompt. Type `quit` to exit. |
 | `make debug` | Build, then start Renode with a GDB server on port 3333. |
@@ -672,7 +818,6 @@ Run all of these from the repo root on your host (they call Docker for you).
 | `make test` | Run `renode/test.robot` via `renode-test`. |
 | `make qemu` | Run the same ELF on QEMU's generic Cortex-M4 board (no nRF peripherals). Exit with `Ctrl-A` then `X`. |
 | `make qemu-debug` | QEMU halted with a GDB server on port 1234. |
-| `make shell` | Open a shell inside the container. |
 | `make clippy` / `make fmt` | Lint / format the code. |
 | `make size` | Show section sizes of the built ELF. |
 | `make clean` | Remove build output and test reports. |
@@ -719,7 +864,7 @@ It is worth being exact about this.
   something looks off.
 - **The baked-in SVD.** The Dockerfile step has not been built. If it fails,
   the likely causes are a changed URL in Renode's stock platform (the `grep`
-  guard exists to catch exactly that) or no internet during `make image`.
+  guard exists to catch exactly that) or no internet while the image builds.
 - **`make test`, `make debug` / `make gdb`, `make qemu`, `make qemu-debug`.**
   Commands and flags were written from Renode's and QEMU's documentation but
   none have been run. The Robot test is expected to *fail* until your kernel
@@ -734,11 +879,45 @@ It is worth being exact about this.
   changes that came with it** (the `rust-analyzer` component and the `dev`
   user). The JSON was checked to be valid, but none of it was built or opened in
   VS Code in the environment where it was written, and no Docker was available
-  there. The first `make image` and the first "Reopen in Container" are the real
-  test. Things worth checking afterwards: that `rust-analyzer` shows a version in
-  the container terminal (`rust-analyzer --version`), that `src/vectors.rs` has
-  no red errors in the editor, and that files created in the container are owned
-  by your user on the host.
+  there. The first "Reopen in Container" is the real test. Things worth checking
+  afterwards: that `rust-analyzer` shows a version in the container terminal
+  (`rust-analyzer --version`), that `src/vectors.rs` has no red errors in the
+  editor, and that files created in the container are owned by your user on the
+  host.
+
+- **The container-only Makefile and the UART code (`src/uart.rs`).** The Rust
+  code was type-checked against the host PC with no warnings and is
+  rustfmt-clean, and a `make -n` dry run showed the expected commands. It was
+  **not** built for the Cortex-M4 target or run in Renode. The UART register
+  offsets were written from the nRF52840 datasheet, and Renode's UARTE model might
+  not behave as expected (for example, if it never raises `EVENTS_ENDTX`, the
+  first `println!` would hang). Since Step 12 this code is not compiled in.
+
+- **The debug console (`src/debugcon.rs`, `renode/debugcon.py`, the `debugcon`
+  entry in `renode/nrf52840.repl`, and the updated `renode/test.robot`).** The Rust
+  was type-checked against the host PC with the feature both on and off, with no
+  warnings, and the Python script was only syntax-checked. Nothing was run in
+  Renode. Several things are unproven and are what to check first:
+    1. **Renode accepts the peripheral.** The `.repl` syntax and the script's
+       `request.IsInit` / `request.IsWrite` / `request.Value` names follow Renode's
+       documentation. If `make run` fails while loading the platform, the error
+       message will name the line.
+    2. **The script path resolves** (`renode/debugcon.py`). If not, use an absolute
+       path.
+    3. **`self.InfoLog("{0}", line)` is a valid call from the script.** The
+       documentation's own example calls `self.NoisyLog(...)`; `InfoLog` is assumed
+       to exist alongside it. If Renode reports an error there, try
+       `self.WarningLog("{0}", line)`, which Renode prints at the default log level.
+    4. **Where the text appears.** Expect a line such as
+       `[INFO] debugcon: kernel booted` in the Renode terminal, but that exact form
+       was not seen.
+    5. **`renode/test.robot`.** `Create Log Tester 5` and `Wait For Log Entry` come
+       from Renode's testing documentation, which does not spell out the timeout
+       units or whether matching is a substring match, so run `make test` and check
+       that any failure is about the log line and not about the keyword syntax.
+       If nothing prints, `pause`, check `sysbus.cpu PC`, and run `sysbus
+  LogPeripheralAccess sysbus.debugcon` to see whether the CPU is reaching the
+       peripheral at all.
 
 **Important limits of simulation:** Renode and QEMU model the chip from
 documentation. Code that works in simulation can still fail on real silicon,
@@ -756,8 +935,8 @@ the real board.
 |---|---|
 | `failed to connect to the docker API ... docker.sock` | The daemon is not running. `sudo systemctl enable --now docker.service`. |
 | `permission denied` talking to Docker | You are not in the `docker` group. `sudo usermod -aG docker $USER`, then log out and back in. |
-| `make image` fails at the Renode download | The asset name or version is wrong. Check [Renode releases](https://github.com/renode/renode/releases) for `renode-<version>.linux-portable.tar.gz` and adjust `RENODE_VERSION`. |
-| `make image` fails at the SVD step | Either no internet, or the URL line in Renode's stock `nrf52840.repl` changed; check the `sed`/`grep` lines in the Dockerfile. |
+| Building the image fails at the Renode download | The asset name or version is wrong. Check [Renode releases](https://github.com/renode/renode/releases) for `renode-<version>.linux-portable.tar.gz` and adjust `RENODE_VERSION`. |
+| Building the image fails at the SVD step | Either no internet, or the URL line in Renode's stock `nrf52840.repl` changed; check the `sed`/`grep` lines in the Dockerfile. |
 | `rust-lld: error: unknown argument '-nostartfiles'` | Remove that flag from `.cargo/config.toml` (already done). |
 | `PC` is a weird value like `0xE7FE`, `SP` is huge | The vector table is missing or not at address 0. Check `sysbus ReadDoubleWord 0x0` and `0x4`. |
 | Renode warns `WriteDoubleWord to non existing peripheral` | A write to an address with nothing mapped: a wrong address, an unmodelled peripheral, or a garbage stack pointer. |
@@ -766,7 +945,8 @@ the real board.
 | Files in `target/` owned by root | The container was run without `--user`; use the Makefile targets, which pass it. Inside the dev container, check that `remoteUser` is `dev` and `updateRemoteUserUID` is `true`. |
 | rust-analyzer shows `can't find crate for 'test'` | It is analyzing test targets. Make sure `rust-analyzer.cargo.allTargets` and `rust-analyzer.check.allTargets` are `false` (set in `devcontainer.json`). |
 | rust-analyzer analyzes for your PC instead of the ARM chip | Make sure it runs *inside* the dev container, and that `rust-analyzer.cargo.target` is `thumbv7em-none-eabihf`. |
-| `make` says `docker: command not found` in the dev container | Expected. Docker is not inside the container; use the plain `cargo` and `renode` commands from the table in Step 10. |
+| `make: renode: No such file or directory` (or `cargo`, `gdb-multiarch`) | You are running `make` on the host, not inside the container. Reopen the folder in the dev container, or use the `docker run` one-liner at the top of the `Makefile`. |
+| Renode crashes or complains it cannot write a file in `$HOME` | `HOME` is not writable. Inside the dev container it is `/home/dev`, which is fine; from a plain `docker run`, pass `-e HOME=/tmp` as in the Makefile's comment. |
 | Dev container build fails at `useradd` | UID 1000 is already taken in the base image. Change the UID in the Dockerfile's `useradd` line. |
 
 ---
@@ -775,15 +955,17 @@ the real board.
 
 The environment is ready; the remaining work is yours. A sensible order:
 
-1. **Rebuild the image** to pick up the baked-in SVD (`make image`), then confirm
-   `make run` no longer downloads anything.
+1. **Rebuild the image** to pick up the baked-in SVD (in VS Code: "Dev Containers:
+   Rebuild Container"), then confirm `make run` no longer downloads anything.
 2. **Verify the vector table** using the checks in section 7.
 3. **Write your reset handler.** The linker script already exports `_sdata`,
    `_edata`, `_sidata`, `_sbss`, `_ebss` and `_estack` for copying `.data`, zeroing
    `.bss`, and setting up the stack. Remember to enable the FPU if you keep the
    `hf` target.
-4. **Get UARTE0 printing `kernel booted`.** That makes `make test` pass and gives
-   you a debug channel for everything after.
+4. **Check the debug console prints `kernel booted`.** The code already exists
+   (Step 12): confirm the line appears when you `make run`, and that `make test`
+   passes. Then use `dprintln!` as your debug channel for everything after, and
+   build for hardware with `--no-default-features` so it compiles out.
 5. **Bring up SysTick and PendSV**, the foundation of a scheduler, and check them
    in the simulator.
 6. **Use `make debug` and `make gdb`** when something goes wrong: set a breakpoint
@@ -798,6 +980,10 @@ The environment is ready; the remaining work is yours. A sensible order:
 
 - [QEMU: Nordic nRF boards (microbit)](https://qemu.readthedocs.io/en/master/system/arm/nrf.html), which states that the `microbit` machine is an nRF51822 / Cortex-M0 and that nRF52 is not supported.
 - [Renode releases](https://github.com/renode/renode/releases) (1.17.0 notes and assets).
+- [Renode: Using Python in Renode](https://renode.readthedocs.io/en/latest/basic/using-python.html) (Python peripherals in a `.repl`).
+- [Renode: Testing API](https://renode.readthedocs.io/en/latest/basic/renode-testing-api.html) (`Create Log Tester`, `Wait For Log Entry`).
+- [Renode changelog](https://github.com/renode/renode/blob/master/CHANGELOG.rst) (Arm semihosting calls added in 1.17.0).
+- [Renode issue #516: Semihosting UART support](https://github.com/renode/renode/issues/516).
 - [Renode README](https://github.com/renode/renode/blob/master/README.md) (installation, flags, Docker).
 - [Renode: Debugging with GDB](https://renode.readthedocs.io/en/latest/debugging/gdb.html).
 - [Renode: UART integration](https://renode.readthedocs.io/en/latest/host-integration/uart.html).

@@ -7,3 +7,13 @@
 //
 // Add board-level things (LEDs, buttons, extra devices) below this line.
 using "platforms/cpus/nrf52840.repl"
+
+// Debug console for quick-and-dirty printing (src/debugcon.rs). A write to this
+// 4-byte register prints a character; a '\n' flushes the line to the Renode log
+// as "debugcon: <line>". It is not part of the real chip. Address must match
+// DEBUGCON in src/debugcon.rs. If Renode cannot find the script, use an absolute
+// path (e.g. "/work/renode/debugcon.py").
+debugcon: Python.PythonPeripheral @ sysbus 0x60000000
+    size: 0x4
+    initable: true
+    filename: "/work/renode/debugcon.py"

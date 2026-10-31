@@ -2,4 +2,6 @@ target/
 log.html
 report.html
 robot_output.xml
- 
+
+/.vscode/
+/.idea/

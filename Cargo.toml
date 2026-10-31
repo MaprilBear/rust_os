@@ -3,6 +3,12 @@ name = "kernel"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Quick-and-dirty console for Renode (src/debugcon.rs). On by default; build for
+# real hardware with `cargo build --no-default-features`.
+default = ["debugcon"]
+debugcon = []
+
 [dependencies]
 
 [profile.dev]

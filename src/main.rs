@@ -3,6 +3,8 @@
 
 mod nrf52840;
 mod vectors;
+#[macro_use]
+mod debugcon;
 
 use core::{panic::PanicInfo, ptr::write_volatile};
 
@@ -14,11 +16,13 @@ use crate::nrf52840::*;
 // (.data copy, .bss zero, FPU enable, jump to kernel main, ...).
 #[no_mangle]
 pub extern "C" fn Reset() -> ! {
+    dprintln!("kernel booted");
     let mut i = 1;
     loop {
         let value = if i % 2 == 0 { 0x0 } else { 0x1 };
         unsafe { write_volatile(&mut gpio0().out as *mut u32, value) };
         i += 1;
+        dprintln!("i: {i}")
     }
 }
 
