@@ -5,8 +5,7 @@
 //! RTC0 is IRQ 11); see the product specification for the full list.
 //!
 //! The table is placed in `.vector_table`, which `link.ld` puts at address 0.
-
-use core::ptr::addr_of;
+use crate::exception_routines::{default_handler, PendSVHandler, ResetHandler};
 
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
@@ -44,8 +43,8 @@ unsafe impl Sync for VectorTable {}
 #[no_mangle]
 #[used]
 pub static VECTOR_TABLE: VectorTable = VectorTable {
-    initial_sp: addr_of!(_estack),
-    reset: crate::Reset,
+    initial_sp:  unsafe { &raw const _estack },
+    reset: ResetHandler,
     exceptions: [
         handler(default_handler), // 2  NMI
         handler(default_handler), // 3  HardFault
@@ -59,15 +58,8 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(default_handler), // 11 SVCall
         handler(default_handler), // 12 DebugMonitor
         RESERVED,                 // 13
-        handler(default_handler), // 14 PendSV
+        handler(PendSVHandler),   // 14 PendSV
         handler(default_handler), // 15 SysTick
     ],
     irqs: [handler(default_handler); NUM_IRQS],
 };
-
-/// Placeholder for every exception and interrupt until you install real ones.
-/// Spinning here makes an unexpected fault easy to spot: pause the simulator
-/// and check `sysbus.cpu PC`.
-extern "C" fn default_handler() {
-    loop {}
-}
