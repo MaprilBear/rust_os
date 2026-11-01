@@ -43,23 +43,22 @@ fn create_tcb(thread_entry: ThreadEntry) {
     // Saved exception frame layout (for a fresh stack)
     // ^ 0xFFFF_FFFF
     // |
-    // 0   | PSR -- (top of stack)
-    // -1  | PC   |
-    // -2  | LR   |
-    // -3  | R12  | popped by returning from an exception
-    // -4  | R3   |
-    // -5  | R2   |
-    // -6  | R1   |
-    // -7  | R0 ---
-    // -8  | R4 ----
-    // -9  | R5    |
-    // -10 | R6    |
-    // -11 | R7    |
-    // -12 | R8    | popped manually by the PendSV Handler
-    // -13 | R9    |
-    // -14 | R10   |
-    // -15 | R11 ---
-    // -16 | <---- current stack pointer
+    // -1   | PSR -- (top of stack)
+    // -2  | PC   |
+    // -3  | LR   |
+    // -4  | R12  | popped by returning from an exception
+    // -5  | R3   |
+    // -6  | R2   |
+    // -7  | R1   |
+    // -8  | R0 ---
+    // -9  | R4 ----
+    // -10  | R5    |
+    // -11 | R6    |
+    // -12 | R7    |
+    // -13 | R8    | popped manually by the PendSV Handler
+    // -14 | R9    |
+    // -15 | R10   |
+    // -16 | R11 ---   <---- current stack pointer
     // |
     // V 0x0000_0000
 
@@ -78,12 +77,10 @@ fn create_tcb(thread_entry: ThreadEntry) {
         *lr = 0xFFFF_FFFF; // EXC_RETURN for standard frame, default register, thumb logic
         *pc = thread_entry as usize as u32;
         *psr = 1 << 24; // Set thumb bit
-
     }
 }
 
-fn os_init(thread_entry: ThreadEntry) -> !
-{
+fn os_init(thread_entry: ThreadEntry) -> ! {
     unsafe {
         create_tcb(thread_entry);
         NEXT_TCB = &raw mut THE_TCB;

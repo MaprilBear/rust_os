@@ -43,7 +43,7 @@ unsafe impl Sync for VectorTable {}
 #[no_mangle]
 #[used]
 pub static VECTOR_TABLE: VectorTable = VectorTable {
-    initial_sp:  unsafe { &raw const _estack },
+    initial_sp: unsafe { &raw const _estack },
     reset: ResetHandler,
     exceptions: [
         handler(default_handler), // 2  NMI
