@@ -1,4 +1,5 @@
-use crate::{CURR_TCB, NEXT_TCB, os_add_thread, os_init, os_schedule, os_start};
+use crate::uarte::{uart_init, uart_send};
+use crate::{os_add_thread, os_init, os_schedule, os_start, CURR_TCB, NEXT_TCB};
 use core::arch::asm;
 use core::panic::PanicInfo;
 
@@ -59,13 +60,14 @@ pub extern "C" fn PendSVHandler() {
 
 extern "C" fn idle_thread() -> ! {
     loop {
-        dprintln!("boop!");
+        uart_send(b"Hello, UART!\n");
     }
 }
 
 extern "C" fn idle_thread2() -> ! {
+    uart_init();
     loop {
-        dprintln!("beep!");
+        uart_send(b"Screw you, UART!\n");
     }
 }
 

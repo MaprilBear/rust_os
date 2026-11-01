@@ -3,6 +3,10 @@ name = "kernel"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "kernel"
+path = "src/os.rs"
+
 [features]
 # Quick-and-dirty console for Renode (src/debugcon.rs). On by default; build for
 # real hardware with `cargo build --no-default-features`.
@@ -10,9 +14,11 @@ default = ["debugcon"]
 debugcon = []
 
 [dependencies]
+bitfields = "3.2.1"
 cortex-m = { version = "0.7.10", features = ["critical-section-single-core"] }
 critical-section = "1.2.0"
 embedded-alloc = "0.7.0"
+saturating_cast = "0.1.0"
 
 [profile.dev]
 panic = "abort"

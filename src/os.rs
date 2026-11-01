@@ -1,3 +1,9 @@
+// TODO: Add mutexes
+// TODO: Make the scheduler priority based
+// TODO: Support cooperative and premptive threads like Zephyr
+// TODO: Implement workqueues
+// TODO: Implement UART driver
+
 #![no_std]
 #![no_main]
 
@@ -6,16 +12,15 @@ mod vectors;
 #[macro_use]
 mod debugcon;
 mod exception_routines;
+mod uarte;
 
 extern crate alloc;
 
 use crate::exception_routines::os_first_switch;
 use alloc::{boxed::Box, vec::Vec};
-use core::{
-    cell::RefCell,
-    ptr,
-};
-use cortex_m::self as _;
+use bitfields::bitflag;
+use core::{cell::RefCell, ptr};
+use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
 #[global_allocator]
@@ -75,7 +80,6 @@ impl Scheduler {
                 unsafe {
                     let curr_index = tcb_list
                         .iter_mut()
-                        
                         .position(|slot| ptr::eq(slot.as_mut().unwrap() as *mut TCB, CURR_TCB))
                         .unwrap();
                     let next_index = tcb_list
@@ -84,9 +88,8 @@ impl Scheduler {
                         .position(|slot| slot.is_some());
 
                     if let Some(next_index) = next_index {
-                        NEXT_TCB = tcb_list[curr_index + 1 + next_index]
-                            .as_mut()
-                            .unwrap() as *mut TCB;
+                        NEXT_TCB =
+                            tcb_list[curr_index + 1 + next_index].as_mut().unwrap() as *mut TCB;
                     } else {
                         // No next thread found, schedule the first one available
                         NEXT_TCB =
@@ -157,6 +160,19 @@ fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
     }
 }
 
+#[bitflag(u8)]
+enum Nrf52840InterruptPriority {
+    #[base]
+    Zero = 0x00,
+    One = 0x20,
+    Two = 0x40,
+    Three = 0x60,
+    Four = 0x80,
+    Five = 0xA0,
+    Six = 0xC0,
+    Seven = 0xE0,
+}
+
 fn start_systick() {
     unsafe {
         let core_periph = cortex_m::peripheral::Peripherals::take().unwrap();
@@ -165,9 +181,17 @@ fn start_systick() {
 
         syst.disable_interrupt();
         syst.disable_counter();
-        syst.set_reload(64_000_000 / 200); // 10ms period
+        syst.set_reload(64_000_000 / 1000); // 1000 Hz (1 ms period)
         syst.clear_current();
-        scb.set_priority(cortex_m::peripheral::scb::SystemHandler::SysTick, 7);
+        scb.set_priority(
+            cortex_m::peripheral::scb::SystemHandler::SysTick,
+            Nrf52840InterruptPriority::Six.into_bits(),
+        );
+        // PendSV must not preempt SysTick before the active exception can return.
+        scb.set_priority(
+            cortex_m::peripheral::scb::SystemHandler::PendSV,
+            Nrf52840InterruptPriority::Seven.into_bits(),
+        );
         syst.enable_interrupt();
         syst.enable_counter();
     }

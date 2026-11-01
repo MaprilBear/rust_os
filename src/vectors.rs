@@ -60,7 +60,7 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(default_handler), // 12 DebugMonitor
         RESERVED,                 // 13
         handler(PendSVHandler),   // 14 PendSV
-        handler(SystickHandler), // 15 SysTick
+        handler(SystickHandler),  // 15 SysTick
     ],
     irqs: [handler(default_handler); NUM_IRQS],
 };
