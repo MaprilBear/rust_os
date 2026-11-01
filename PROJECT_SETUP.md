@@ -427,7 +427,7 @@ changes were made:
 container, and the original Makefile worked by calling `docker run`. So the
 Makefile was changed (Step 11) to assume it is already running inside the
 container: open a terminal in VS Code and use `make build`, `make run`, and so
-on directly. GDB and Renode run in the same container, so `localhost:3333` just
+on directly. GDB and Renode run in the same container, so `localhost:3334` just
 works and no `--network host` is needed.
 
 **Not using VS Code?** The `devcontainer.json` is a standard format. The
@@ -640,7 +640,7 @@ Targets are listed in section 6.
 
 It sets three variables: `ELF` (the path to the built kernel, derived from the
 target triple and the `PROFILE` variable, `debug` by default), and `GDB_PORT`
-(3333, used by `make gdb`). The first lines of the file contain a `docker run`
+(3334, used by `make gdb`). The first lines of the file contain a `docker run`
 one-liner for running any target from the host if you ever need to; it is only a
 comment, not part of the build.
 
@@ -777,9 +777,9 @@ Includes `common.resc`, then `start`s the simulation.
 
 ### `renode/debug.resc`
 
-Includes `common.resc`, then starts a GDB server on port 3333 with
-`machine StartGdbServer 3333 true`. The `true` means "start the emulation
-automatically when GDB connects," so the CPU does not run ahead of your debugger.
+Includes `common.resc`, then starts a GDB server on port 3334 with
+`machine StartGdbServer 3334 false`. The CPU stays halted when GDB connects so
+the debugger can install breakpoints before execution.
 
 ### `renode/run.sh`
 
@@ -813,7 +813,7 @@ image for you and its terminal is the shell.)
 | `make build` | `cargo build` (debug). |
 | `make release` | `cargo build --release`. |
 | `make run` | Build, then boot the kernel on the simulated nRF52840 in Renode. You get a `(nrf52840)` prompt. Type `quit` to exit. |
-| `make debug` | Build, then start Renode with a GDB server on port 3333. |
+| `make debug` | Build, then start Renode with a GDB server on port 3334. |
 | `make gdb` | In a second terminal: attach `gdb-multiarch` to that server. |
 | `make test` | Run `renode/test.robot` via `renode-test`. |
 | `make qemu` | Run the same ELF on QEMU's generic Cortex-M4 board (no nRF peripherals). Exit with `Ctrl-A` then `X`. |
@@ -969,7 +969,7 @@ The environment is ready; the remaining work is yours. A sensible order:
 5. **Bring up SysTick and PendSV**, the foundation of a scheduler, and check them
    in the simulator.
 6. **Use `make debug` and `make gdb`** when something goes wrong: set a breakpoint
-   at `Reset`, step, and inspect registers. `monitor <command>` inside GDB runs
+   at `ResetHandler`, step, and inspect registers. `monitor <command>` inside GDB runs
    Renode Monitor commands.
 7. **Get real hardware** when you can. Your `link.ld` already matches the
    nRF52840's memory map, so the same ELF is what you will flash.

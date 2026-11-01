@@ -27,7 +27,7 @@ renode/
   nrf52840.repl         platform (stock nRF52840 + room for your additions)
   common.resc           create machine, load platform + ELF, show UART0
   run.resc              common + start
-  debug.resc            common + GDB server on :3333 (no start)
+  debug.resc            common + GDB server on :3334 (CPU held for debugging)
   run.sh                cargo runner (used by `cargo run`)
   test.robot            Robot Framework test
 ```
@@ -119,23 +119,22 @@ Terminal 1:
 make debug
 ```
 
-This loads the ELF, starts a GDB server on port 3333, and does **not** start the
-CPU. The `true` argument to `StartGdbServer` makes the emulation start when GDB
-connects.
+This loads the ELF and starts a GDB server on port 3334. The CPU stays halted
+when GDB connects so the debugger can install breakpoints before execution.
 
 Terminal 2:
 
 ```
-make gdb          # gdb-multiarch inside the container, connects to localhost:3333
+make gdb          # gdb-multiarch inside the container, connects to localhost:3334
 ```
 
 Or use your own GDB: `arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/kernel`
-then `target remote :3333`.
+then `target remote :3334`.
 
 Typical session:
 
 ```
-(gdb) break Reset
+(gdb) break ResetHandler
 (gdb) continue
 (gdb) info registers
 (gdb) x/8wx 0x0                # vector table

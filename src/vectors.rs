@@ -5,7 +5,7 @@
 //! RTC0 is IRQ 11); see the product specification for the full list.
 //!
 //! The table is placed in `.vector_table`, which `link.ld` puts at address 0.
-use crate::exception_routines::{default_handler, PendSVHandler, ResetHandler};
+use crate::exception_routines::{default_handler, PendSVHandler, ResetHandler, SystickHandler};
 
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
@@ -43,6 +43,7 @@ unsafe impl Sync for VectorTable {}
 #[no_mangle]
 #[used]
 pub static VECTOR_TABLE: VectorTable = VectorTable {
+    #[allow(unused_unsafe)]
     initial_sp: unsafe { &raw const _estack },
     reset: ResetHandler,
     exceptions: [
@@ -59,7 +60,7 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(default_handler), // 12 DebugMonitor
         RESERVED,                 // 13
         handler(PendSVHandler),   // 14 PendSV
-        handler(default_handler), // 15 SysTick
+        handler(SystickHandler), // 15 SysTick
     ],
     irqs: [handler(default_handler); NUM_IRQS],
 };

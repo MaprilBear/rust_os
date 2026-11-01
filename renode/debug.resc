@@ -1,4 +1,4 @@
 include @renode/common.resc
 
-# `true` = start emulation as soon as GDB connects.
+# Keep the CPU halted until GDB has installed breakpoints and resumes it.
 machine StartGdbServer 3334 true

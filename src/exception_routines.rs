@@ -1,12 +1,6 @@
-use crate::{os_init, TCB};
+use crate::{CURR_TCB, NEXT_TCB, os_add_thread, os_init, os_schedule, os_start};
 use core::arch::asm;
 use core::panic::PanicInfo;
-
-// Globals used to identify the current and next threads for thr context switch logic
-extern "C" {
-    static mut CURR_TCB: *mut TCB;
-    static mut NEXT_TCB: *mut TCB;
-}
 
 pub extern "C" fn os_first_switch() -> ! {
     unsafe {
@@ -31,7 +25,6 @@ pub extern "C" fn context_switch() {
             "LDR     R0, ={int_ctrl}    ",
             "LDR     R1, ={pendsv}      ", // Execution will leave this thread until scheduled again
             "STR     R1, [R0]",
-            "BX      LR",
             int_ctrl = const NVIC_INT_CTRL,
             pendsv = const NVIC_PENDSVSET,
         )
@@ -47,14 +40,14 @@ pub extern "C" fn PendSVHandler() {
             "LDR    R1, [R0]         ", // R1 = CURR_TCB
             "CBZ    R1, 1f           ", // first switch: nothing to save
             "MRS    R2, PSP          ", // R2 = outgoing task's stack pointer
-            "STMDB  R2!, {R4-R11}  ",   // push r4-r11 onto the task stack (PSP), not MSP
+            "STMDB  R2!, {R4-R11}    ", // push r4-r11 onto the task stack (PSP), not MSP
             "STR    R2, [R1, #4]     ", // CURR_TCB->sp = R2
-            "1:                          ",
+            "1:                      ",
             "LDR    R1, =NEXT_TCB    ",
             "LDR    R1, [R1]         ", // R1 = NEXT_TCB
             "STR    R1, [R0]         ", // CURR_TCB = NEXT_TCB
             "LDR    R2, [R1, #4]     ", // R2 = CURR_TCB->sp
-            "LDMIA  R2!, {R4-R11}  ",   // restore r4-r11 from the task stack
+            "LDMIA  R2!, {R4-R11}    ", // restore r4-r11 from the task stack
             "MSR    PSP, R2          ", // PSP now points at the hardware frame (r0-r3, r12, lr, pc, xpsr)
             "MVN    LR, #2           ", // LR = 0xFFFFFFFD: return to Thread mode, use PSP
             "CPSIE  I                ",
@@ -70,10 +63,30 @@ extern "C" fn idle_thread() -> ! {
     }
 }
 
+extern "C" fn idle_thread2() -> ! {
+    loop {
+        dprintln!("beep!");
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn SystickHandler() {
+    unsafe {
+        dprintln!("SysTick!");
+        dprintln!("before   curr: {:p}, next: {:p}", CURR_TCB, NEXT_TCB);
+        os_schedule();
+        dprintln!("after    curr: {:p}, next: {:p}", CURR_TCB, NEXT_TCB);
+        context_switch();
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn ResetHandler() -> ! {
     dprintln!("entered reset");
-    os_init(idle_thread);
+    os_init();
+    os_add_thread(idle_thread, 256);
+    os_add_thread(idle_thread2, 256);
+    os_start();
 }
 
 #[panic_handler]
@@ -87,5 +100,6 @@ fn panic(_info: &PanicInfo) -> ! {
 /// and check `sysbus.cpu PC`.
 pub extern "C" fn default_handler() {
     dprintln!("Exception!");
+    #[allow(clippy::empty_loop)]
     loop {}
 }
