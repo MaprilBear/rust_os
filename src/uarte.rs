@@ -269,7 +269,7 @@ static mut UART1_SEM: *mut Semaphore = ptr::null_mut();
 
 impl Uart {
     fn claim(taken: *mut Semaphore, base: usize) -> Self {
-        os_sem_take(taken);
+        unsafe { (*taken).take() };
         Self {
             regs: unsafe { &*(base as *const UartRegs) },
         }
@@ -281,7 +281,7 @@ impl Uart {
     }
     pub fn give_uart0(self) {
         dprintln!("Giving uart0 semaphore");
-        os_sem_give(unsafe { UART0_SEM });
+        unsafe { (*UART0_SEM).give() };
     }
     pub fn take_uart1() -> Self {
         dprintln!("Taking uart1 semaphore");
@@ -289,21 +289,17 @@ impl Uart {
     }
     pub fn give_uart1(self) {
         dprintln!("Giving uart1 semaphore");
-        os_sem_give(unsafe { UART1_SEM });
+        unsafe { (*UART1_SEM).give() };
     }
 }
 
-use core::{
-    cell::UnsafeCell,
-    marker::PhantomData,
-    ptr,
-};
+use core::{cell::UnsafeCell, marker::PhantomData, ptr};
 
 use alloc::boxed::Box;
 use bitfields::{bitfield, bitflag};
 use saturating_cast::SaturatingCast;
 
-use crate::{Semaphore, os_sem_give, os_sem_take};
+use crate::Semaphore;
 
 pub fn uart_init() {
     unsafe { UART0_SEM = Box::into_raw(Box::new(Semaphore::with_count(1))) };

@@ -218,18 +218,14 @@ fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize) {
     create_tcb(thread_entry, stack_size);
 }
 
-fn os_schedule() {
-    SCHEDULER.schedule();
-}
-
 fn os_start() -> ! {
     start_systick();
-    os_schedule();
-    os_first_switch();
+    os_yield();
+    panic!("os_start should never return");
 }
 
 fn os_yield() {
-    os_schedule();
+    SCHEDULER.schedule();
     context_switch();
 }
 
@@ -238,49 +234,55 @@ pub struct Semaphore {
     waiters: Vec<ThreadId>,
 }
 
-impl Semaphore
-{
+impl Semaphore {
     fn with_count(count: isize) -> Self {
         Self {
             count,
             waiters: Vec::new(),
         }
     }
-}
 
-fn os_sem_take(sem: *mut Semaphore) {
-    critical_section::with(|_| {
-        let sem = unsafe { &mut *sem };
-        sem.count -= 1;
-        if sem.count < 0 {
-            dprintln!("Semaphore count is negative, blocking thread");
-            let current = unsafe { &mut *CURR_TCB };
-            let current_id = current.id;
-            current.state = ThreadState::Blocked;
-            sem.waiters.push(current_id);
-            os_schedule();
-            context_switch();
+    fn take(&mut self) {
+        let mut blocked = false;
+        critical_section::with(|_| {
+            self.count -= 1;
+            if self.count < 0 {
+                let current = unsafe { &mut *CURR_TCB };
+                let current_id = current.id;
+                current.state = ThreadState::Blocked;
+                self.waiters.push(current_id);
+                blocked = true;
+            }
+        });
+        if blocked {
+            os_yield();
         }
-        dprintln!("Semaphore count is non-negative, proceeding");
-    });
-}
+    }
 
-fn os_sem_give(sem: *mut Semaphore) {
-    let should_switch = critical_section::with(|_| {
-        let sem = unsafe { &mut *sem };
-        sem.count += 1;
-        if let Some(waiter) = sem.waiters.pop() {
-            SCHEDULER.tcb_list.with(|tcb_list| {
-                let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
-                tcb.state = ThreadState::Ready;
-            });
-            true
-        } else {
-            false
+    fn give(&mut self) {
+        let woke = critical_section::with(|_| {
+            self.count += 1;
+            if let Some(waiter) = self.waiters.pop() {
+                SCHEDULER.tcb_list.with(|tcb_list| {
+                    let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
+                    tcb.state = ThreadState::Ready;
+                });
+                true
+            } else {
+                false
+            }
+        });
+        if woke {
+            os_yield();
         }
-    });
-    if should_switch {
-        os_schedule();
-        context_switch();
+    }
+
+    fn with<F>(&mut self, f: F)
+    where
+        F: FnOnce(),
+    {
+        self.take();
+        f();
+        self.give();
     }
 }

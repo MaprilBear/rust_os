@@ -1,5 +1,5 @@
 use crate::uarte::{uart_init, uart_send};
-use crate::{os_add_thread, os_init, os_schedule, os_start, CURR_TCB, NEXT_TCB};
+use crate::{os_add_thread, os_init, os_start, os_yield, CURR_TCB, NEXT_TCB, SCHEDULER};
 use core::arch::asm;
 use core::panic::PanicInfo;
 
@@ -72,13 +72,8 @@ extern "C" fn idle_thread2() -> ! {
 
 #[no_mangle]
 pub extern "C" fn SystickHandler() {
-    unsafe {
-        dprintln!("SysTick!");
-        dprintln!("before   curr: {:p}, next: {:p}", CURR_TCB, NEXT_TCB);
-        os_schedule();
-        dprintln!("after    curr: {:p}, next: {:p}", CURR_TCB, NEXT_TCB);
-        context_switch();
-    }
+    dprintln!("SysTick!");
+    os_yield();
 }
 
 #[no_mangle]
