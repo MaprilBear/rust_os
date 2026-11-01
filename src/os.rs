@@ -16,7 +16,7 @@ mod uarte;
 
 extern crate alloc;
 
-use crate::exception_routines::os_first_switch;
+use crate::exception_routines::{context_switch, os_first_switch};
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
 use core::{cell::RefCell, ptr};
@@ -29,15 +29,23 @@ static HEAP: Heap = Heap::empty();
 #[repr(C, align(8))] // AAPCS requires the SP to be 8-byte aligned
 struct Stack(Vec<u32>);
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    Ready,
+    Running,
+    Blocked,
+}
+
 #[repr(C)]
 pub struct TCB {
     priority: u32,
     sp: *mut u32,
     stack: Box<Stack>,
+    state: ThreadState,
+    id: ThreadId,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct ThreadId(u16);
+type ThreadId = usize;
 
 type TcbEntries = Vec<Option<TCB>>;
 
@@ -68,32 +76,31 @@ static SCHEDULER: Scheduler = Scheduler {
 impl Scheduler {
     fn schedule(&self) {
         self.tcb_list.with(|tcb_list| {
-            if unsafe { CURR_TCB.is_null() } {
-                // No current thread, schedule the first one available
-                unsafe {
-                    NEXT_TCB =
-                        tcb_list.iter_mut().find_map(|slot| slot.as_mut()).unwrap() as *mut TCB
-                };
-            } else {
-                // Iterate through the list, starting the index after the current thread, and
-                // schedule the next available thread
-                unsafe {
-                    let curr_index = tcb_list
-                        .iter_mut()
-                        .position(|slot| ptr::eq(slot.as_mut().unwrap() as *mut TCB, CURR_TCB))
-                        .unwrap();
-                    let next_index = tcb_list
-                        .iter_mut()
-                        .skip(curr_index + 1)
-                        .position(|slot| slot.is_some());
+            let len = tcb_list.len();
+            if len == 0 {
+                return;
+            }
 
-                    if let Some(next_index) = next_index {
-                        NEXT_TCB =
-                            tcb_list[curr_index + 1 + next_index].as_mut().unwrap() as *mut TCB;
-                    } else {
-                        // No next thread found, schedule the first one available
-                        NEXT_TCB =
-                            tcb_list.iter_mut().find_map(|slot| slot.as_mut()).unwrap() as *mut TCB;
+            let start = unsafe {
+                if CURR_TCB.is_null() {
+                    0
+                } else {
+                    let current = &mut *CURR_TCB;
+                    if current.state == ThreadState::Running {
+                        current.state = ThreadState::Ready;
+                    }
+                    (current.id + 1) % len
+                }
+            };
+
+            for offset in 0..len {
+                let index = (start + offset) % len;
+                if let Some(tcb) = tcb_list[index].as_mut() {
+                    if tcb.state == ThreadState::Ready {
+                        tcb.state = ThreadState::Running;
+                        dprintln!("Scheduled next thread: {:p}", tcb);
+                        unsafe { NEXT_TCB = tcb as *mut TCB };
+                        break;
                     }
                 }
             }
@@ -144,16 +151,20 @@ fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
         *pc = thread_entry as usize as u32;
         *psr = 1 << 24; // Set thumb bit
 
-        let tcb = TCB {
+        let mut tcb = TCB {
+            id: 0,
             priority: 0,
             sp,
             stack,
+            state: ThreadState::Ready,
         };
 
         SCHEDULER.tcb_list.with(|tcb_list| {
             if let Some(slot_index) = tcb_list.iter().position(|slot| slot.is_none()) {
+                tcb.id = slot_index;
                 tcb_list[slot_index] = Some(tcb);
             } else {
+                tcb.id = tcb_list.len();
                 tcb_list.push(Some(tcb));
             }
         });
@@ -215,4 +226,61 @@ fn os_start() -> ! {
     start_systick();
     os_schedule();
     os_first_switch();
+}
+
+fn os_yield() {
+    os_schedule();
+    context_switch();
+}
+
+pub struct Semaphore {
+    count: isize,
+    waiters: Vec<ThreadId>,
+}
+
+impl Semaphore
+{
+    fn with_count(count: isize) -> Self {
+        Self {
+            count,
+            waiters: Vec::new(),
+        }
+    }
+}
+
+fn os_sem_take(sem: *mut Semaphore) {
+    critical_section::with(|_| {
+        let sem = unsafe { &mut *sem };
+        sem.count -= 1;
+        if sem.count < 0 {
+            dprintln!("Semaphore count is negative, blocking thread");
+            let current = unsafe { &mut *CURR_TCB };
+            let current_id = current.id;
+            current.state = ThreadState::Blocked;
+            sem.waiters.push(current_id);
+            os_schedule();
+            context_switch();
+        }
+        dprintln!("Semaphore count is non-negative, proceeding");
+    });
+}
+
+fn os_sem_give(sem: *mut Semaphore) {
+    let should_switch = critical_section::with(|_| {
+        let sem = unsafe { &mut *sem };
+        sem.count += 1;
+        if let Some(waiter) = sem.waiters.pop() {
+            SCHEDULER.tcb_list.with(|tcb_list| {
+                let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
+                tcb.state = ThreadState::Ready;
+            });
+            true
+        } else {
+            false
+        }
+    });
+    if should_switch {
+        os_schedule();
+        context_switch();
+    }
 }

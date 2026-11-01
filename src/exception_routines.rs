@@ -65,7 +65,6 @@ extern "C" fn idle_thread() -> ! {
 }
 
 extern "C" fn idle_thread2() -> ! {
-    uart_init();
     loop {
         uart_send(b"Screw you, UART!\n");
     }
@@ -88,6 +87,7 @@ pub extern "C" fn ResetHandler() -> ! {
     os_init();
     os_add_thread(idle_thread, 256);
     os_add_thread(idle_thread2, 256);
+    uart_init();
     os_start();
 }
 
