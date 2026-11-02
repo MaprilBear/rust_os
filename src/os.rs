@@ -13,6 +13,7 @@ mod vectors;
 mod debugcon;
 mod exception_routines;
 mod uarte;
+mod reset;
 
 extern crate alloc;
 

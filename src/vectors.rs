@@ -5,8 +5,8 @@
 //! RTC0 is IRQ 11); see the product specification for the full list.
 //!
 //! The table is placed in `.vector_table`, which `link.ld` puts at address 0.
-use crate::exception_routines::{default_handler, PendSVHandler, ResetHandler, SystickHandler};
-
+use crate::exception_routines::{default_handler, PendSVHandler, SystickHandler};
+use crate::reset::ResetHandler;
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
     static _estack: u32;
