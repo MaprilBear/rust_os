@@ -235,7 +235,7 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
-    fn with_count(count: isize) -> Self {
+    const fn with_count(count: isize) -> Self {
         Self {
             count,
             waiters: Vec::new(),

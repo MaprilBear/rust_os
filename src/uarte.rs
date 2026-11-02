@@ -250,63 +250,68 @@ struct UartRegs {
     config: Reg<UartConfig, Rw>, // 0x56C
 }
 
-const UART0E_BASE: u32 = 0x40002000;
-const UART1E_BASE: u32 = 0x40028000;
+const UART0E_BASE: *mut UartRegs = 0x40002000 as *mut UartRegs;
+const UART1E_BASE: *mut UartRegs = 0x40028000 as *mut UartRegs;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // UART Implementation
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub struct Uart {
-    regs: &'static UartRegs,
+// The handle can move between contexts; only one exists per peripheral.
+unsafe impl Send for Uarte {}
+
+// UART peripherals are thread safe via semaphores
+unsafe impl Sync for Uarte {}
+
+pub struct Uarte {
+    semaphore: UnsafeCell<Semaphore>,
+    regs: *mut UartRegs,
 }
 
-// The handle can move between contexts; only one exists per peripheral.
-unsafe impl Send for Uart {}
+pub static UARTE0: Uarte = Uarte {
+    semaphore: UnsafeCell::new(Semaphore::with_count(1)),
+    // It is safe to convert the pointer to a shared reference
+    regs: UART0E_BASE,
+};
 
-static mut UART0_SEM: *mut Semaphore = ptr::null_mut();
-static mut UART1_SEM: *mut Semaphore = ptr::null_mut();
+pub static UARTE1: Uarte = Uarte {
+    semaphore: UnsafeCell::new(Semaphore::with_count(1)),
+    regs: UART1E_BASE,
+};
 
-impl Uart {
-    fn claim(taken: *mut Semaphore, base: usize) -> Self {
-        unsafe { (*taken).take() };
-        Self {
-            regs: unsafe { &*(base as *const UartRegs) },
-        }
-    }
 
-    pub fn take_uart0() -> Self {
-        dprintln!("Taking uart0 semaphore");
-        Self::claim(unsafe { UART0_SEM }, 0x4000_2000)
-    }
-    pub fn give_uart0(self) {
-        dprintln!("Giving uart0 semaphore");
-        unsafe { (*UART0_SEM).give() };
-    }
-    pub fn take_uart1() -> Self {
-        dprintln!("Taking uart1 semaphore");
-        Self::claim(unsafe { UART1_SEM }, 0x4002_8000)
-    }
-    pub fn give_uart1(self) {
-        dprintln!("Giving uart1 semaphore");
-        unsafe { (*UART1_SEM).give() };
+impl Uarte {
+    pub fn send(&self, buffer: &[u8]) {
+        unsafe { (*self.semaphore.get()).take() };
+
+        let regs = unsafe { &*self.regs };
+        // Setup EasyDMA registers
+        regs.txd.ptr.write(buffer.as_ptr() as u32);
+        regs.txd.maxcnt.write(
+            Count16Builder::new()
+                .with_count(buffer.len().saturating_cast::<u16>())
+                .build(),
+        );
+
+        // Trigger the transmission and busy wait
+        regs.start_tx.trigger();
+        // Busy wait until transmission is complete
+        while !regs.endtx.is_set() {}
+        regs.endtx.clear();
+
+        unsafe { (*self.semaphore.get()).give() };
     }
 }
 
 use core::{cell::UnsafeCell, marker::PhantomData, ptr};
 
-use alloc::boxed::Box;
 use bitfields::{bitfield, bitflag};
 use saturating_cast::SaturatingCast;
 
 use crate::Semaphore;
 
 pub fn uart_init() {
-    unsafe { UART0_SEM = Box::into_raw(Box::new(Semaphore::with_count(1))) };
-    unsafe { UART1_SEM = Box::into_raw(Box::new(Semaphore::with_count(1))) };
-
-    let uart0 = Uart::take_uart0();
-
+    dprintln!("{:p}", UARTE0.regs);
     // Setup a basic non conflicting PSEL config (no RTS/CTS)
     // TODO: Allow this to be user defined
     let psel_rts = UartPselBuilder::new().with_disconnected(true).build();
@@ -321,40 +326,22 @@ pub fn uart_init() {
         .with_pin_num(1)
         .with_port_num(0)
         .build();
-    uart0.regs.psel_cts.write(psel_cts);
-    uart0.regs.psel_rts.write(psel_rts);
-    uart0.regs.psel_txd.write(psel_txd);
-    uart0.regs.psel_rxd.write(psel_rxd);
+    let regs = unsafe { &*UARTE0.regs };
+    regs.psel_cts.write(psel_cts);
+    regs.psel_rts.write(psel_rts);
+    regs.psel_txd.write(psel_txd);
+    regs.psel_rxd.write(psel_rxd);
 
-    uart0.regs.baudrate.write(UartBaudRate::B115200);
+    regs.baudrate.write(UartBaudRate::B115200);
 
     let config = UartConfigBuilder::new()
         .with_hardware_flow_control(false)
         .with_parity(UartConfigParityFlag::None)
         .with_stop_bits(UartConfigStopBitsFlag::One)
         .build();
-    uart0.regs.config.write(config);
+    regs.config.write(config);
 
     let uart_enable = UartEnableBuilder::new().with_enable(true).build();
-    uart0.regs.enable.write(uart_enable);
-
-    uart0.give_uart0();
+    regs.enable.write(uart_enable);
 }
 
-pub fn uart_send(buffer: &[u8]) {
-    let uart0 = Uart::take_uart0();
-    // Setup EasyDMA registers
-    uart0.regs.txd.ptr.write(buffer.as_ptr() as u32);
-    uart0.regs.txd.maxcnt.write(
-        Count16Builder::new()
-            .with_count(buffer.len().saturating_cast::<u16>())
-            .build(),
-    );
-
-    // Trigger the transmission and busy wait
-    uart0.regs.start_tx.trigger();
-    // Busy wait until transmission is complete
-    while !uart0.regs.endtx.is_set() {}
-    uart0.regs.endtx.clear();
-    uart0.give_uart0();
-}

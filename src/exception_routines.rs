@@ -1,7 +1,102 @@
-use crate::uarte::{uart_init, uart_send};
-use crate::{os_add_thread, os_init, os_start, os_yield, CURR_TCB, NEXT_TCB, SCHEDULER};
-use core::arch::asm;
+use crate::uarte::{UARTE0, uart_init};
+use crate::{os_add_thread, os_init, os_start, os_yield};
+use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
+use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
+
+// This handler returns via EXC_RETURN, so it must not have a Rust prologue.
+global_asm!(
+    ".global PendSVHandler",
+    ".type PendSVHandler, %function",
+    ".thumb_func",
+    "PendSVHandler:",
+    "cpsid i",
+    "ldr r0, =CURR_TCB",
+    "ldr r1, [r0]",
+    "cbz r1, 1f",
+    "mrs r2, PSP",
+    "stmdb r2!, {{r4-r11}}",
+    "str r2, [r1, #4]",
+    "b 2f",
+    "1:",
+    // The first exception frame was stacked on MSP while starting from ResetHandler.
+    "add sp, sp, #32",
+    "2:",
+    "ldr r1, =NEXT_TCB",
+    "ldr r1, [r1]",
+    "str r1, [r0]",
+    "ldr r2, [r1, #4]",
+    "ldmia r2!, {{r4-r11}}",
+    "msr PSP, r2",
+    "mvn lr, #2",
+    "cpsie i",
+    "bx lr",
+);
+
+unsafe extern "C" {
+    static _sidata: u32;
+    static mut _sdata: u32;
+    static mut _edata: u32;
+    static mut _sbss: u32;
+    static mut _ebss: u32;
+    pub safe fn PendSVHandler();
+}
+
+/// Copy `.data` from flash to RAM and zero `.bss`.
+///
+/// # Safety
+/// Must be called once, before any Rust code that reads statics.
+/// The linker script must word-align `_sdata`, `_edata`, `_sidata`, `_sbss`, `_ebss`.
+#[inline(never)]
+unsafe fn initialize_memory() {
+    // .data: flash -> RAM, 4 words per iteration.
+    let mut src = addr_of!(_sidata);
+    let mut dst = addr_of_mut!(_sdata);
+    let data_end = addr_of_mut!(_edata);
+
+    while data_end.offset_from(dst) >= 4 {
+        asm!(
+            "ldm {s}!, {{{t0}, {t1}, {t2}, {t3}}}",
+            "stm {d}!, {{{t0}, {t1}, {t2}, {t3}}}",
+            s = inout(reg) src,
+            d = inout(reg) dst,
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t2 = out(reg) _,
+            t3 = out(reg) _,
+            options(nostack)
+        );
+    }
+    while dst < data_end {
+        core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
+        dst = dst.add(1);
+        src = src.add(1);
+    }
+
+    // .bss: zero, 4 words per iteration.
+    let mut bss = addr_of_mut!(_sbss);
+    let bss_end = addr_of_mut!(_ebss);
+
+    while bss_end.offset_from(bss) >= 4 {
+        asm!(
+            "movs {t0}, #0",
+            "movs {t1}, #0",
+            "movs {t2}, #0",
+            "movs {t3}, #0",
+            "stm {d}!, {{{t0}, {t1}, {t2}, {t3}}}",
+            d = inout(reg) bss,
+            t0 = out(reg) _,
+            t1 = out(reg) _,
+            t2 = out(reg) _,
+            t3 = out(reg) _,
+            options(nostack)
+        );
+    }
+    while bss < bss_end {
+        core::ptr::write_volatile(bss, 0);
+        bss = bss.add(1);
+    }
+}
 
 pub extern "C" fn os_first_switch() -> ! {
     unsafe {
@@ -32,41 +127,15 @@ pub extern "C" fn context_switch() {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn PendSVHandler() {
-    unsafe {
-        asm!(
-            "CPSID  I                ",
-            "LDR    R0, =CURR_TCB    ",
-            "LDR    R1, [R0]         ", // R1 = CURR_TCB
-            "CBZ    R1, 1f           ", // first switch: nothing to save
-            "MRS    R2, PSP          ", // R2 = outgoing task's stack pointer
-            "STMDB  R2!, {R4-R11}    ", // push r4-r11 onto the task stack (PSP), not MSP
-            "STR    R2, [R1, #4]     ", // CURR_TCB->sp = R2
-            "1:                      ",
-            "LDR    R1, =NEXT_TCB    ",
-            "LDR    R1, [R1]         ", // R1 = NEXT_TCB
-            "STR    R1, [R0]         ", // CURR_TCB = NEXT_TCB
-            "LDR    R2, [R1, #4]     ", // R2 = CURR_TCB->sp
-            "LDMIA  R2!, {R4-R11}    ", // restore r4-r11 from the task stack
-            "MSR    PSP, R2          ", // PSP now points at the hardware frame (r0-r3, r12, lr, pc, xpsr)
-            "MVN    LR, #2           ", // LR = 0xFFFFFFFD: return to Thread mode, use PSP
-            "CPSIE  I                ",
-            "BX     LR               ", // hardware pops the frame from PSP
-            options(raw, noreturn)
-        )
-    }
-}
-
 extern "C" fn idle_thread() -> ! {
     loop {
-        uart_send(b"Hello, UART!\n");
+        unsafe { UARTE0.send(b"Hello, UART!\n") };
     }
 }
 
 extern "C" fn idle_thread2() -> ! {
     loop {
-        uart_send(b"Screw you, UART!\n");
+        unsafe { UARTE0.send(b"Screw you, UART!\n") };
     }
 }
 
@@ -78,6 +147,7 @@ pub extern "C" fn SystickHandler() {
 
 #[no_mangle]
 pub extern "C" fn ResetHandler() -> ! {
+    unsafe { initialize_memory() };
     dprintln!("entered reset");
     os_init();
     os_add_thread(idle_thread, 256);
