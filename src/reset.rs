@@ -4,8 +4,8 @@ use core::{
 };
 
 use crate::{
-    exception_routines::{idle_thread, idle_thread2},
     os_add_thread, os_init, os_start,
+    threads::{idle_thread, idle_thread2},
     uarte::uart_init,
 };
 

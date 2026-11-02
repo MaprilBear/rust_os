@@ -8,19 +8,19 @@
 #![no_main]
 
 mod nrf52840;
-mod vectors;
 #[macro_use]
 mod debugcon;
-mod exception_routines;
+
 mod reset;
+mod threads;
 mod uarte;
+mod vectors;
 
 extern crate alloc;
 
-use crate::exception_routines::context_switch;
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
-use core::{cell::RefCell, ptr};
+use core::{arch::asm, cell::RefCell, ptr};
 use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
@@ -223,6 +223,18 @@ fn os_start() -> ! {
     start_systick();
     os_yield();
     panic!("os_start should never return");
+}
+
+pub extern "C" fn context_switch() {
+    unsafe {
+        asm!(
+            "LDR     R0, ={int_ctrl}    ",
+            "LDR     R1, ={pendsv}      ", // Execution will leave this thread until scheduled again
+            "STR     R1, [R0]",
+            int_ctrl = const 0xE000_ED04u32,
+            pendsv = const 0x1000_0000u32,
+        )
+    }
 }
 
 fn os_yield() {
