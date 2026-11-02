@@ -12,12 +12,12 @@ mod vectors;
 #[macro_use]
 mod debugcon;
 mod exception_routines;
-mod uarte;
 mod reset;
+mod uarte;
 
 extern crate alloc;
 
-use crate::exception_routines::{context_switch, os_first_switch};
+use crate::exception_routines::context_switch;
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
 use core::{cell::RefCell, ptr};

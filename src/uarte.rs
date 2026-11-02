@@ -279,7 +279,6 @@ pub static UARTE1: Uarte = Uarte {
     regs: UART1E_BASE,
 };
 
-
 impl Uarte {
     pub fn send(&self, buffer: &[u8]) {
         unsafe { (*self.semaphore.get()).take() };
@@ -344,4 +343,3 @@ pub fn uart_init() {
     let uart_enable = UartEnableBuilder::new().with_enable(true).build();
     regs.enable.write(uart_enable);
 }
-

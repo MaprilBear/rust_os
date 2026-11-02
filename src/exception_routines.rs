@@ -1,8 +1,7 @@
-use crate::uarte::{UARTE0, uart_init};
-use crate::{os_add_thread, os_init, os_start, os_yield};
+use crate::uarte::UARTE0;
+use crate::os_yield;
 use core::arch::{asm, global_asm};
 use core::panic::PanicInfo;
-use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 
 // This handler returns via EXC_RETURN, so it must not have a Rust prologue.
 global_asm!(
@@ -68,13 +67,13 @@ pub extern "C" fn context_switch() {
 
 pub extern "C" fn idle_thread() -> ! {
     loop {
-        unsafe { UARTE0.send(b"Hello, UART!\n") };
+        UARTE0.send(b"Hello, UART!\n");
     }
 }
 
 pub extern "C" fn idle_thread2() -> ! {
     loop {
-        unsafe { UARTE0.send(b"Screw you, UART!\n") };
+        UARTE0.send(b"Screw you, UART!\n");
     }
 }
 

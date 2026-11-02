@@ -1,6 +1,13 @@
-use core::{arch::asm, ptr::{addr_of, addr_of_mut}};
+use core::{
+    arch::asm,
+    ptr::{addr_of, addr_of_mut},
+};
 
-use crate::{exception_routines::{idle_thread, idle_thread2}, os_add_thread, os_init, os_start, uarte::uart_init};
+use crate::{
+    exception_routines::{idle_thread, idle_thread2},
+    os_add_thread, os_init, os_start,
+    uarte::uart_init,
+};
 
 unsafe extern "C" {
     static _sidata: u32;
@@ -8,7 +15,6 @@ unsafe extern "C" {
     static mut _edata: u32;
     static mut _sbss: u32;
     static mut _ebss: u32;
-    pub safe fn PendSVHandler();
 }
 
 /// Copy `.data` from flash to RAM and zero `.bss`.
