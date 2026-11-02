@@ -279,6 +279,7 @@ pub static UARTE1: Uarte = Uarte {
     regs: UART1E_BASE,
 };
 
+// TODO: switch to an interrupt based mechanism
 impl Uarte {
     pub fn send(&self, buffer: &[u8]) {
         unsafe { (*self.semaphore.get()).take() };

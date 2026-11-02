@@ -7,7 +7,6 @@
 #![no_std]
 #![no_main]
 
-mod nrf52840;
 #[macro_use]
 mod debugcon;
 
