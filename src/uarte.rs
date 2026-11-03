@@ -250,12 +250,33 @@ struct UartRegs {
     config: Reg<UartConfig, Rw>, // 0x56C
 }
 
-const UART0E_BASE: *mut UartRegs = 0x40002000 as *mut UartRegs;
-const UART1E_BASE: *mut UartRegs = 0x40028000 as *mut UartRegs;
+const UART0E_BASE: usize = 0x40002000;
+const UART1E_BASE: usize = 0x40028000;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // UART Implementation
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+
+use core::ops::Deref;
+
+pub struct Mmio<T>(*const T);
+
+impl<T> Mmio<T> {
+    /// # Safety
+    /// `addr` must be the address of a valid, live `T` (the peripheral's
+    /// register block), and only one owner may exist per peripheral.
+    pub const unsafe fn new(addr: usize) -> Self {
+        Self(addr as *const T) // int->ptr cast is fine in const; deref is not
+    }
+}
+
+impl<T> Deref for Mmio<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // Sound by the contract on `new`; evaluated at runtime, not in const.
+        unsafe { &*self.0 }
+    }
+}
 
 // The handle can move between contexts; only one exists per peripheral.
 unsafe impl Send for Uarte {}
@@ -264,42 +285,38 @@ unsafe impl Send for Uarte {}
 unsafe impl Sync for Uarte {}
 
 pub struct Uarte {
-    semaphore: UnsafeCell<Semaphore>,
-    regs: *mut UartRegs,
+    semaphore: Semaphore,
+    regs: Mmio<UartRegs>,
 }
 
-pub static UARTE0: Uarte = Uarte {
-    semaphore: UnsafeCell::new(Semaphore::with_count(1)),
-    // It is safe to convert the pointer to a shared reference
-    regs: UART0E_BASE,
-};
-
-pub static UARTE1: Uarte = Uarte {
-    semaphore: UnsafeCell::new(Semaphore::with_count(1)),
-    regs: UART1E_BASE,
-};
+pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
+pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 // TODO: switch to an interrupt based mechanism
 impl Uarte {
+    const unsafe fn new(base_address: usize) -> Self {
+        Self {
+            semaphore: Semaphore::with_count(1),
+            regs: unsafe { Mmio::new(base_address) },
+        }
+    }
+
     pub fn send(&self, buffer: &[u8]) {
-        unsafe { (*self.semaphore.get()).take() };
+        self.semaphore.with(|| {
+            let regs = &*self.regs;
+            // Setup EasyDMA registers
+            regs.txd.ptr.write(buffer.as_ptr() as u32);
+            regs.txd.maxcnt.write(
+                Count16Builder::new()
+                    .with_count(buffer.len().saturating_cast::<u16>())
+                    .build(),
+            );
 
-        let regs = unsafe { &*self.regs };
-        // Setup EasyDMA registers
-        regs.txd.ptr.write(buffer.as_ptr() as u32);
-        regs.txd.maxcnt.write(
-            Count16Builder::new()
-                .with_count(buffer.len().saturating_cast::<u16>())
-                .build(),
-        );
-
-        // Trigger the transmission and busy wait
-        regs.start_tx.trigger();
-        // Busy wait until transmission is complete
-        while !regs.endtx.is_set() {}
-        regs.endtx.clear();
-
-        unsafe { (*self.semaphore.get()).give() };
+            // Trigger the transmission and busy wait until it's done
+            regs.start_tx.trigger();
+            while !regs.endtx.is_set() {}
+            regs.endtx.clear();
+        });
     }
 }
 
@@ -310,8 +327,10 @@ use saturating_cast::SaturatingCast;
 
 use crate::Semaphore;
 
+/// # Safety
+/// This function should not be called post-OS initialization.
 pub fn uart_init() {
-    dprintln!("{:p}", UARTE0.regs);
+    dprintln!("{:p}", UARTE0.regs.0);
     // Setup a basic non conflicting PSEL config (no RTS/CTS)
     // TODO: Allow this to be user defined
     let psel_rts = UartPselBuilder::new().with_disconnected(true).build();
@@ -326,7 +345,7 @@ pub fn uart_init() {
         .with_pin_num(1)
         .with_port_num(0)
         .build();
-    let regs = unsafe { &*UARTE0.regs };
+    let regs = &*UARTE0.regs;
     regs.psel_cts.write(psel_cts);
     regs.psel_rts.write(psel_rts);
     regs.psel_txd.write(psel_txd);

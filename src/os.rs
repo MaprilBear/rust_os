@@ -19,7 +19,11 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
-use core::{arch::asm, cell::RefCell, ptr};
+use core::{
+    arch::asm,
+    cell::{RefCell, UnsafeCell},
+    ptr,
+};
 use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
@@ -192,7 +196,7 @@ fn start_systick() {
 
         syst.disable_interrupt();
         syst.disable_counter();
-        syst.set_reload(64_000_000 / 1000); // 1000 Hz (1 ms period)
+        syst.set_reload(64_000_000 / 100); // 1000 Hz (1 ms period)
         syst.clear_current();
         scb.set_priority(
             cortex_m::peripheral::scb::SystemHandler::SysTick,
@@ -241,28 +245,39 @@ fn os_yield() {
     context_switch();
 }
 
-pub struct Semaphore {
+pub struct RawSemaphore {
     count: isize,
     waiters: Vec<ThreadId>,
 }
 
+pub struct Semaphore {
+    raw: UnsafeCell<RawSemaphore>,
+}
+
+// To make the compiler happy, the semaphore implementation must be thread-safe through the use of
+// critical sections.
+unsafe impl Sync for Semaphore {}
+
 impl Semaphore {
     const fn with_count(count: isize) -> Self {
         Self {
-            count,
-            waiters: Vec::new(),
+            raw: UnsafeCell::new(RawSemaphore {
+                count,
+                waiters: Vec::new(),
+            }),
         }
     }
 
-    fn take(&mut self) {
+    fn take(&self) {
         let mut blocked = false;
         critical_section::with(|_| {
-            self.count -= 1;
-            if self.count < 0 {
+            let raw = unsafe { &mut *self.raw.get() };
+            raw.count -= 1;
+            if raw.count < 0 {
                 let current = unsafe { &mut *CURR_TCB };
                 let current_id = current.id;
                 current.state = ThreadState::Blocked;
-                self.waiters.push(current_id);
+                raw.waiters.push(current_id);
                 blocked = true;
             }
         });
@@ -271,10 +286,11 @@ impl Semaphore {
         }
     }
 
-    fn give(&mut self) {
+    fn give(&self) {
         let woke = critical_section::with(|_| {
-            self.count += 1;
-            if let Some(waiter) = self.waiters.pop() {
+            let raw = unsafe { &mut *self.raw.get() };
+            raw.count += 1;
+            if let Some(waiter) = raw.waiters.pop() {
                 SCHEDULER.tcb_list.with(|tcb_list| {
                     let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
                     tcb.state = ThreadState::Ready;
@@ -289,7 +305,7 @@ impl Semaphore {
         }
     }
 
-    fn with<F>(&mut self, f: F)
+    fn with<F>(&self, f: F)
     where
         F: FnOnce(),
     {
