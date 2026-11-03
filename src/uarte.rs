@@ -131,6 +131,8 @@ struct UartPsel {
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 struct UartBaudRate(u32);
+
+#[allow(unused)]
 impl UartBaudRate {
     const B1200: Self = Self(0x0004_F000);
     const B2400: Self = Self(0x0009_D000);
@@ -251,6 +253,7 @@ struct UartRegs {
 }
 
 const UART0E_BASE: usize = 0x40002000;
+#[allow(unused)]
 const UART1E_BASE: usize = 0x40028000;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -290,6 +293,7 @@ pub struct Uarte {
 }
 
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
+#[allow(unused)]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 // TODO: switch to an interrupt based mechanism

@@ -1,3 +1,4 @@
+#![allow(future_incompatible)]
 // TODO: Add mutexes
 // TODO: Make the scheduler priority based
 // TODO: Support cooperative and premptive threads like Zephyr
