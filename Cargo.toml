@@ -21,9 +21,13 @@ embedded-alloc = "0.7.0"
 saturating_cast = "0.1.0"
 
 [profile.dev]
-panic = "abort"
-opt-level = 1      # opt-level 0 gets large; 1 keeps debugging reasonable
-debug = true
+opt-level = 0
+debug = 2
+lto = false
+codegen-units = 256
+incremental = true
+overflow-checks = true
+panic = "abort"      # only if you already use it
 
 [profile.release]
 panic = "abort"

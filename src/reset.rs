@@ -90,8 +90,8 @@ pub extern "C" fn ResetHandler() -> ! {
     unsafe { initialize_memory() };
     dprintln!("entered reset");
     os_init();
-    os_add_thread(user_thread1, 256);
-    os_add_thread(user_thread2, 256);
+    os_add_thread(user_thread1, 1024);
+    os_add_thread(user_thread2, 1024);
     uart_init();
     os_start();
 }

@@ -277,7 +277,7 @@ extern "C" fn idle_thread() -> ! {
 
 fn os_init() {
     unsafe {
-        embedded_alloc::init!(HEAP, 4098);
+        embedded_alloc::init!(HEAP, 16000);
     }
     os_add_thread(idle_thread, 128);
 }
