@@ -11,6 +11,7 @@
 mod debugcon;
 
 mod reset;
+mod semaphore;
 mod threads;
 mod uarte;
 mod vectors;
@@ -19,11 +20,7 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
-use core::{
-    arch::asm,
-    cell::{RefCell, UnsafeCell},
-    ptr,
-};
+use core::{arch::asm, cell::RefCell, ptr};
 use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
@@ -243,74 +240,4 @@ pub extern "C" fn context_switch() {
 fn os_yield() {
     SCHEDULER.schedule();
     context_switch();
-}
-
-pub struct RawSemaphore {
-    count: isize,
-    waiters: Vec<ThreadId>,
-}
-
-pub struct Semaphore {
-    raw: UnsafeCell<RawSemaphore>,
-}
-
-// To make the compiler happy, the semaphore implementation must be thread-safe through the use of
-// critical sections.
-unsafe impl Sync for Semaphore {}
-
-impl Semaphore {
-    const fn with_count(count: isize) -> Self {
-        Self {
-            raw: UnsafeCell::new(RawSemaphore {
-                count,
-                waiters: Vec::new(),
-            }),
-        }
-    }
-
-    fn take(&self) {
-        let mut blocked = false;
-        critical_section::with(|_| {
-            let raw = unsafe { &mut *self.raw.get() };
-            raw.count -= 1;
-            if raw.count < 0 {
-                let current = unsafe { &mut *CURR_TCB };
-                let current_id = current.id;
-                current.state = ThreadState::Blocked;
-                raw.waiters.push(current_id);
-                blocked = true;
-            }
-        });
-        if blocked {
-            os_yield();
-        }
-    }
-
-    fn give(&self) {
-        let woke = critical_section::with(|_| {
-            let raw = unsafe { &mut *self.raw.get() };
-            raw.count += 1;
-            if let Some(waiter) = raw.waiters.pop() {
-                SCHEDULER.tcb_list.with(|tcb_list| {
-                    let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
-                    tcb.state = ThreadState::Ready;
-                });
-                true
-            } else {
-                false
-            }
-        });
-        if woke {
-            os_yield();
-        }
-    }
-
-    fn with<F>(&self, f: F)
-    where
-        F: FnOnce(),
-    {
-        self.take();
-        f();
-        self.give();
-    }
 }

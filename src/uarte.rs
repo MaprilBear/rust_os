@@ -325,7 +325,7 @@ use core::{cell::UnsafeCell, marker::PhantomData, ptr};
 use bitfields::{bitfield, bitflag};
 use saturating_cast::SaturatingCast;
 
-use crate::Semaphore;
+use crate::semaphore::Semaphore;
 
 /// # Safety
 /// This function should not be called post-OS initialization.
