@@ -822,6 +822,17 @@ image for you and its terminal is the shell.)
 | `make size` | Show section sizes of the built ELF. |
 | `make clean` | Remove build output and test reports. |
 
+### Git pre-commit formatting check
+
+Enable the repository's pre-commit hook once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+The hook runs `cargo fmt --all -- --check` and blocks commits if formatting is
+needed. Run `cargo fmt --all` to apply formatting, then stage the changes.
+
 Handy Renode Monitor commands at the `(nrf52840)` prompt:
 
 ```

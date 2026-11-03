@@ -5,7 +5,7 @@ use core::{
 
 use crate::{
     os_add_thread, os_init, os_start,
-    threads::{idle_thread, idle_thread2},
+    threads::{user_thread1, user_thread2},
     uarte::uart_init,
 };
 
@@ -90,8 +90,8 @@ pub extern "C" fn ResetHandler() -> ! {
     unsafe { initialize_memory() };
     dprintln!("entered reset");
     os_init();
-    os_add_thread(idle_thread, 256);
-    os_add_thread(idle_thread2, 256);
+    os_add_thread(user_thread1, 256);
+    os_add_thread(user_thread2, 256);
     uart_init();
     os_start();
 }

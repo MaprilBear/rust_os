@@ -4,7 +4,6 @@
 // TODO: Support cooperative and premptive threads like Zephyr
 // TODO: Implement workqueues
 // TODO: Implement UART driver
-
 #![no_std]
 #![no_main]
 
@@ -36,6 +35,7 @@ pub enum ThreadState {
     Ready,
     Running,
     Blocked,
+    Sleeping,
 }
 
 #[repr(C)]
@@ -45,6 +45,7 @@ pub struct TCB {
     stack: Box<Stack>,
     state: ThreadState,
     id: ThreadId,
+    sleep_ms: u32,
 }
 
 type ThreadId = usize;
@@ -52,11 +53,13 @@ type ThreadId = usize;
 type TcbEntries = Vec<Option<TCB>>;
 
 struct TcbList(RefCell<TcbEntries>);
+struct SleepList(RefCell<Vec<ThreadId>>);
 
 // SAFETY: Access is only through `with`, which enters a critical section.
 // This relies on the critical-section implementation providing exclusion
 // for every context that can access this single-core MCU.
 unsafe impl Sync for TcbList {}
+unsafe impl Sync for SleepList {}
 
 impl TcbList {
     fn with<R>(&self, f: impl for<'a> FnOnce(&'a mut TcbEntries) -> R) -> R {
@@ -67,12 +70,23 @@ impl TcbList {
     }
 }
 
+impl SleepList {
+    fn with<R>(&self, f: impl for<'a> FnOnce(&'a mut Vec<ThreadId>) -> R) -> R {
+        critical_section::with(|_| {
+            let mut entries = self.0.borrow_mut();
+            f(&mut entries)
+        })
+    }
+}
+
 struct Scheduler {
     tcb_list: TcbList,
+    sleep_list: SleepList,
 }
 
 static SCHEDULER: Scheduler = Scheduler {
     tcb_list: TcbList(RefCell::new(Vec::new())),
+    sleep_list: SleepList(RefCell::new(Vec::new())),
 };
 
 impl Scheduler {
@@ -100,7 +114,7 @@ impl Scheduler {
                 if let Some(tcb) = tcb_list[index].as_mut() {
                     if tcb.state == ThreadState::Ready {
                         tcb.state = ThreadState::Running;
-                        dprintln!("Scheduled next thread: {:p}", tcb);
+                        //dprintln!("Scheduled next thread: {:p}", tcb);
                         unsafe { NEXT_TCB = tcb as *mut TCB };
                         break;
                     }
@@ -108,6 +122,50 @@ impl Scheduler {
             }
         });
     }
+
+    fn update_sleeps(&self) {
+        self.sleep_list.with(|sleep_list| {
+            self.tcb_list.with(|tcb_list| {
+                sleep_list.retain(|tcb_id| {
+                    if let Some(tcb) = tcb_list.get_mut(*tcb_id).and_then(Option::as_mut) {
+                        if tcb.sleep_ms > 0 {
+                            tcb.sleep_ms -= 1;
+                        }
+                        if tcb.sleep_ms == 0 {
+                            tcb.state = ThreadState::Ready;
+                            false
+                        } else {
+                            true
+                        }
+                    } else {
+                        false
+                    }
+                });
+            });
+        });
+    }
+
+    fn sleep(&self, ms: u32) {
+        critical_section::with(|_| {
+            let current = unsafe { &mut *CURR_TCB };
+            current.sleep_ms = ms;
+            current.state = ThreadState::Sleeping;
+            let current_id = current.id;
+            self.sleep_list
+                .with(|sleep_list| sleep_list.push(current_id));
+        });
+    }
+}
+
+fn os_tick() {
+    SCHEDULER.update_sleeps();
+    os_yield();
+}
+
+#[no_mangle]
+pub extern "C" fn SystickHandler() {
+    //dprintln!("SysTick!");
+    os_tick();
 }
 
 // Globals used to identify the current and next threads for thr context switch logic
@@ -159,6 +217,7 @@ fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
             sp,
             stack,
             state: ThreadState::Ready,
+            sleep_ms: 0,
         };
 
         SCHEDULER.tcb_list.with(|tcb_list| {
@@ -194,7 +253,7 @@ fn start_systick() {
 
         syst.disable_interrupt();
         syst.disable_counter();
-        syst.set_reload(64_000_000 / 100); // 1000 Hz (1 ms period)
+        syst.set_reload(64_000_000 / 1000); // 1000 Hz (1 ms period) tuned for renode
         syst.clear_current();
         scb.set_priority(
             cortex_m::peripheral::scb::SystemHandler::SysTick,
@@ -210,10 +269,17 @@ fn start_systick() {
     }
 }
 
+extern "C" fn idle_thread() -> ! {
+    loop {
+        os_yield();
+    }
+}
+
 fn os_init() {
     unsafe {
         embedded_alloc::init!(HEAP, 4098);
     }
+    os_add_thread(idle_thread, 128);
 }
 
 fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize) {
@@ -241,4 +307,9 @@ pub extern "C" fn context_switch() {
 fn os_yield() {
     SCHEDULER.schedule();
     context_switch();
+}
+
+fn os_sleep(ms: u32) {
+    SCHEDULER.sleep(ms);
+    os_yield();
 }

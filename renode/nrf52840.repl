@@ -17,3 +17,6 @@ debugcon: Python.PythonPeripheral @ sysbus 0x60000000
     size: 0x4
     initable: true
     filename: "/work/renode/debugcon.py"
+
+nvic:
+    systickFrequency: 64000000

@@ -8,8 +8,8 @@
 use core::arch::global_asm;
 use core::panic::PanicInfo;
 
-use crate::os_yield;
 use crate::reset::ResetHandler;
+use crate::SystickHandler;
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
     static _estack: u32;
@@ -79,12 +79,6 @@ pub extern "C" fn default_handler() {
     dprintln!("Exception!");
     #[allow(clippy::empty_loop)]
     loop {}
-}
-
-#[no_mangle]
-pub extern "C" fn SystickHandler() {
-    dprintln!("SysTick!");
-    os_yield();
 }
 
 // This handler returns via EXC_RETURN, so it must not have a Rust prologue.
