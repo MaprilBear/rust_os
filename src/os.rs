@@ -10,8 +10,11 @@
 #[macro_use]
 mod debugcon;
 
+mod global;
 mod reset;
+mod scheduler;
 mod semaphore;
+mod simple_list;
 mod threads;
 mod uarte;
 mod vectors;
@@ -20,9 +23,11 @@ extern crate alloc;
 
 use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
-use core::{arch::asm, cell::RefCell, ptr};
+use core::arch::asm;
 use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
+
+use crate::scheduler::{scheduler, Scheduler};
 
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
@@ -50,115 +55,8 @@ pub struct TCB {
 
 type ThreadId = usize;
 
-type TcbEntries = Vec<Option<TCB>>;
-
-struct TcbList(RefCell<TcbEntries>);
-struct SleepList(RefCell<Vec<ThreadId>>);
-
-// SAFETY: Access is only through `with`, which enters a critical section.
-// This relies on the critical-section implementation providing exclusion
-// for every context that can access this single-core MCU.
-unsafe impl Sync for TcbList {}
-unsafe impl Sync for SleepList {}
-
-impl TcbList {
-    fn with<R>(&self, f: impl for<'a> FnOnce(&'a mut TcbEntries) -> R) -> R {
-        critical_section::with(|_| {
-            let mut entries = self.0.borrow_mut();
-            f(&mut entries)
-        })
-    }
-}
-
-impl SleepList {
-    fn with<R>(&self, f: impl for<'a> FnOnce(&'a mut Vec<ThreadId>) -> R) -> R {
-        critical_section::with(|_| {
-            let mut entries = self.0.borrow_mut();
-            f(&mut entries)
-        })
-    }
-}
-
-struct Scheduler {
-    tcb_list: TcbList,
-    sleep_list: SleepList,
-}
-
-static SCHEDULER: Scheduler = Scheduler {
-    tcb_list: TcbList(RefCell::new(Vec::new())),
-    sleep_list: SleepList(RefCell::new(Vec::new())),
-};
-
-impl Scheduler {
-    fn schedule(&self) {
-        self.tcb_list.with(|tcb_list| {
-            let len = tcb_list.len();
-            if len == 0 {
-                return;
-            }
-
-            let start = unsafe {
-                if CURR_TCB.is_null() {
-                    0
-                } else {
-                    let current = &mut *CURR_TCB;
-                    if current.state == ThreadState::Running {
-                        current.state = ThreadState::Ready;
-                    }
-                    (current.id + 1) % len
-                }
-            };
-
-            for offset in 0..len {
-                let index = (start + offset) % len;
-                if let Some(tcb) = tcb_list[index].as_mut() {
-                    if tcb.state == ThreadState::Ready {
-                        tcb.state = ThreadState::Running;
-                        //dprintln!("Scheduled next thread: {:p}", tcb);
-                        unsafe { NEXT_TCB = tcb as *mut TCB };
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    fn update_sleeps(&self) {
-        self.sleep_list.with(|sleep_list| {
-            self.tcb_list.with(|tcb_list| {
-                sleep_list.retain(|tcb_id| {
-                    if let Some(tcb) = tcb_list.get_mut(*tcb_id).and_then(Option::as_mut) {
-                        if tcb.sleep_ms > 0 {
-                            tcb.sleep_ms -= 1;
-                        }
-                        if tcb.sleep_ms == 0 {
-                            tcb.state = ThreadState::Ready;
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        false
-                    }
-                });
-            });
-        });
-    }
-
-    fn sleep(&self, ms: u32) {
-        critical_section::with(|_| {
-            let current = unsafe { &mut *CURR_TCB };
-            current.sleep_ms = ms;
-            current.state = ThreadState::Sleeping;
-            let current_id = current.id;
-            self.sleep_list
-                .with(|sleep_list| sleep_list.push(current_id));
-        });
-    }
-}
-
 fn os_tick() {
-    SCHEDULER.update_sleeps();
+    unsafe { scheduler().tick() };
     os_yield();
 }
 
@@ -167,13 +65,6 @@ pub extern "C" fn SystickHandler() {
     //dprintln!("SysTick!");
     os_tick();
 }
-
-// Globals used to identify the current and next threads for thr context switch logic
-#[no_mangle]
-pub static mut CURR_TCB: *mut TCB = ptr::null_mut();
-
-#[no_mangle]
-pub static mut NEXT_TCB: *mut TCB = ptr::null_mut();
 
 // Saved exception frame layout (for a fresh stack)
 // ^ 0xFFFF_FFFF
@@ -211,23 +102,13 @@ fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
         *pc = thread_entry as usize as u32;
         *psr = 1 << 24; // Set thumb bit
 
-        let mut tcb = TCB {
+        scheduler().add_thread(TCB {
             id: 0,
             priority: 0,
             sp,
             stack,
             state: ThreadState::Ready,
             sleep_ms: 0,
-        };
-
-        SCHEDULER.tcb_list.with(|tcb_list| {
-            if let Some(slot_index) = tcb_list.iter().position(|slot| slot.is_none()) {
-                tcb.id = slot_index;
-                tcb_list[slot_index] = Some(tcb);
-            } else {
-                tcb.id = tcb_list.len();
-                tcb_list.push(Some(tcb));
-            }
         });
     }
 }
@@ -305,11 +186,11 @@ pub extern "C" fn context_switch() {
 }
 
 fn os_yield() {
-    SCHEDULER.schedule();
+    unsafe { scheduler().schedule() };
     context_switch();
 }
 
 fn os_sleep(ms: u32) {
-    SCHEDULER.sleep(ms);
+    unsafe { scheduler().sleep(ms) };
     os_yield();
 }

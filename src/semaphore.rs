@@ -1,7 +1,11 @@
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 
-use crate::{os_yield, ThreadId, ThreadState, CURR_TCB, SCHEDULER, TCB};
+use crate::{
+    os_yield,
+    scheduler::{scheduler, Scheduler},
+    ThreadId,
+};
 
 struct RawSemaphore {
     count: isize,
@@ -32,10 +36,8 @@ impl Semaphore {
             let raw = unsafe { &mut *self.raw.get() };
             raw.count -= 1;
             if raw.count < 0 {
-                let current = unsafe { &mut *CURR_TCB };
-                let current_id = current.id;
-                current.state = ThreadState::Blocked;
-                raw.waiters.push(current_id);
+                unsafe { scheduler().block() };
+                raw.waiters.push(unsafe { scheduler().current_thread() });
                 blocked = true;
             }
         });
@@ -49,10 +51,7 @@ impl Semaphore {
             let raw = unsafe { &mut *self.raw.get() };
             raw.count += 1;
             if let Some(waiter) = raw.waiters.pop() {
-                SCHEDULER.tcb_list.with(|tcb_list| {
-                    let tcb: &mut TCB = tcb_list[waiter].as_mut().unwrap();
-                    tcb.state = ThreadState::Ready;
-                });
+                unsafe { scheduler().unblock(waiter) };
                 true
             } else {
                 false
