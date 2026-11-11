@@ -115,7 +115,7 @@ unsafe extern "C" {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    dprintln!("Panic!");
+fn panic(info: &PanicInfo) -> ! {
+    dprintln!("Panic: {}", info);
     loop {}
 }

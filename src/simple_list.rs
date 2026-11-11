@@ -50,6 +50,10 @@ impl<T> SimpleList<T> {
         self.length
     }
 
+    pub fn slot_len(&self) -> usize {
+        self.data.len()
+    }
+
     pub fn capacity(&self) -> usize {
         self.data.capacity()
     }

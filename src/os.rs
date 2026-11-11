@@ -160,7 +160,7 @@ fn os_init() {
     unsafe {
         embedded_alloc::init!(HEAP, 16000);
     }
-    os_add_thread(idle_thread, 128);
+    os_add_thread(idle_thread, 1024);
 }
 
 fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize) {

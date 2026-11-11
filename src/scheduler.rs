@@ -19,57 +19,72 @@ pub trait Scheduler {
     fn current_thread(&self) -> ThreadId;
 }
 
-pub struct RoundRobinScheduler {
+pub trait SchedulePolicy {
+    /// Choose the next thread to run. Return an index into `threads`.
+    /// `current` is the thread that was just running (if any).
+    fn pick_next(
+        &mut self,
+        threads: &SimpleList<TCB>,
+        current: Option<ThreadId>,
+    ) -> Option<ThreadId>;
+
+    // Optional hooks: variants override only what they need.
+    fn on_add(&mut self, _thread: &TCB) {}
+    fn on_remove(&mut self, _id: ThreadId) {}
+}
+
+pub struct SchedulerCore<P: SchedulePolicy> {
     tcb_list: SimpleList<TCB>,
     sleep_list: SimpleList<ThreadId>,
+    policy: P,
 }
 
-pub static SCHEDULER: Global<RoundRobinScheduler> = Global::new(RoundRobinScheduler {
-    tcb_list: SimpleList::new(),
-    sleep_list: SimpleList::new(),
-});
-
-/// Safety: caller must not hold another reference to the scheduler.
-pub unsafe fn scheduler() -> &'static mut RoundRobinScheduler {
-    &mut *SCHEDULER.as_ptr()
-}
-
-impl Scheduler for RoundRobinScheduler {
-    fn current_thread(&self) -> ThreadId {
-        unsafe { (*CURR_TCB).id }
+impl<P: SchedulePolicy> SchedulerCore<P> {
+    pub const fn new(policy: P) -> Self {
+        Self {
+            tcb_list: SimpleList::new(),
+            sleep_list: SimpleList::new(),
+            policy,
+        }
     }
+}
 
+impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
     fn schedule(&mut self) {
         critical_section::with(|_| {
-            let len = self.tcb_list.len();
-            if len == 0 {
-                return;
-            }
-
-            let start = unsafe {
+            let current = unsafe {
                 if CURR_TCB.is_null() {
-                    0
+                    None
                 } else {
-                    let current = &mut *CURR_TCB;
-                    if current.state == ThreadState::Running {
-                        current.state = ThreadState::Ready;
+                    let c = &mut *CURR_TCB;
+                    if c.state == ThreadState::Running {
+                        c.state = ThreadState::Ready;
                     }
-                    (current.id + 1) % len
+                    Some(c.id)
                 }
             };
 
-            for offset in 0..len {
-                let index = (start + offset) % len;
-                if let Some(tcb) = self.tcb_list[index].as_mut() {
-                    if tcb.state == ThreadState::Ready {
-                        tcb.state = ThreadState::Running;
-                        //dprintln!("Scheduled next thread: {:p}", tcb);
-                        unsafe { NEXT_TCB = tcb as *mut TCB };
-                        break;
-                    }
+            if let Some(id) = self.policy.pick_next(&self.tcb_list, current) {
+                if let Some(tcb) = self.tcb_list[id].as_mut() {
+                    tcb.state = ThreadState::Running;
+                    unsafe { NEXT_TCB = tcb as *mut TCB };
                 }
+            } else {
+                unsafe { NEXT_TCB = CURR_TCB };
             }
         });
+    }
+
+    fn add_thread(&mut self, thread: TCB) {
+        critical_section::with(|_| {
+            let index = self.tcb_list.push(thread);
+            self.tcb_list[index].as_mut().unwrap().id = index;
+            self.policy.on_add(self.tcb_list[index].as_ref().unwrap());
+        });
+    }
+
+    fn current_thread(&self) -> ThreadId {
+        unsafe { (*CURR_TCB).id }
     }
 
     fn tick(&mut self) {
@@ -102,13 +117,6 @@ impl Scheduler for RoundRobinScheduler {
         });
     }
 
-    fn add_thread(&mut self, thread: TCB) {
-        critical_section::with(|_| {
-            let index = self.tcb_list.push(thread);
-            self.tcb_list[index].as_mut().unwrap().id = index;
-        });
-    }
-
     fn remove_thread(&mut self, thread: ThreadId) {
         critical_section::with(|_| {
             let tcb_list = &mut self.tcb_list;
@@ -120,6 +128,7 @@ impl Scheduler for RoundRobinScheduler {
             if let Some(index) = index {
                 tcb_list.remove(index);
             }
+            self.policy.on_remove(thread);
         });
     }
 
@@ -137,4 +146,32 @@ impl Scheduler for RoundRobinScheduler {
             }
         });
     }
+}
+
+pub struct RoundRobin;
+
+impl SchedulePolicy for RoundRobin {
+    fn pick_next(
+        &mut self,
+        threads: &SimpleList<TCB>,
+        current: Option<ThreadId>,
+    ) -> Option<ThreadId> {
+        let len = threads.slot_len();
+        if len == 0 {
+            return None;
+        }
+        let start = current.map_or(0, |id| (id + 1) % len);
+        (0..len)
+            .map(|o| (start + o) % len)
+            .find(|&i| matches!(threads[i].as_ref(), Some(t) if t.state == ThreadState::Ready))
+    }
+}
+
+pub type ActiveScheduler = SchedulerCore<RoundRobin>;
+
+pub static SCHEDULER: Global<ActiveScheduler> = Global::new(SchedulerCore::new(RoundRobin));
+
+/// Safety: caller must not hold another reference to the scheduler.
+pub unsafe fn scheduler() -> &'static mut ActiveScheduler {
+    &mut *SCHEDULER.as_ptr()
 }
