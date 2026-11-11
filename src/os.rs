@@ -45,7 +45,7 @@ pub enum ThreadState {
 
 #[repr(C)]
 pub struct TCB {
-    priority: u32,
+    priority: u8,
     sp: *mut u32,
     stack: Box<Stack>,
     state: ThreadState,
@@ -88,7 +88,7 @@ pub extern "C" fn SystickHandler() {
 // |
 // V 0x0000_0000
 type ThreadEntry = extern "C" fn() -> !;
-fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
+fn create_tcb(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
     let mut stack = Box::new(Stack(Vec::with_capacity(stack_size)));
     unsafe {
         let stack_top: *mut u32 = stack.0.as_mut_ptr().add(stack_size);
@@ -104,7 +104,7 @@ fn create_tcb(thread_entry: ThreadEntry, stack_size: usize) {
 
         scheduler().add_thread(TCB {
             id: 0,
-            priority: 0,
+            priority,
             sp,
             stack,
             state: ThreadState::Ready,
@@ -126,27 +126,26 @@ enum Nrf52840InterruptPriority {
     Seven = 0xE0,
 }
 
+use crate::vectors::core_periph;
+
 fn start_systick() {
     unsafe {
-        let core_periph = cortex_m::peripheral::Peripherals::take().unwrap();
-        let mut syst = core_periph.SYST;
-        let mut scb = core_periph.SCB;
+        let core_periph = core_periph();
 
-        syst.disable_interrupt();
-        syst.disable_counter();
-        syst.set_reload(64_000_000 / 1000); // 1000 Hz (1 ms period) tuned for renode
-        syst.clear_current();
-        scb.set_priority(
+        core_periph.SYST.disable_interrupt();
+        core_periph.SYST.set_reload(64_000_000 / 1000); // 1000 Hz (1 ms period) tuned for renode
+        core_periph.SYST.clear_current();
+        core_periph.SCB.set_priority(
             cortex_m::peripheral::scb::SystemHandler::SysTick,
             Nrf52840InterruptPriority::Six.into_bits(),
         );
         // PendSV must not preempt SysTick before the active exception can return.
-        scb.set_priority(
+        core_periph.SCB.set_priority(
             cortex_m::peripheral::scb::SystemHandler::PendSV,
             Nrf52840InterruptPriority::Seven.into_bits(),
         );
-        syst.enable_interrupt();
-        syst.enable_counter();
+        core_periph.SYST.enable_interrupt();
+        core_periph.SYST.enable_counter();
     }
 }
 
@@ -160,11 +159,11 @@ fn os_init() {
     unsafe {
         embedded_alloc::init!(HEAP, 16000);
     }
-    os_add_thread(idle_thread, 1024);
+    os_add_thread(idle_thread, 1024, 7);
 }
 
-fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize) {
-    create_tcb(thread_entry, stack_size);
+fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
+    create_tcb(thread_entry, stack_size, priority);
 }
 
 fn os_start() -> ! {

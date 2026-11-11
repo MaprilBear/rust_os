@@ -14,6 +14,7 @@ pub struct SimpleList<T> {
     length: usize,
 }
 
+#[allow(dead_code)]
 impl<T> SimpleList<T> {
     pub const fn new() -> Self {
         Self {

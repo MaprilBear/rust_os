@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use crate::{global::Global, simple_list::SimpleList, ThreadId, ThreadState, TCB};
 use core::ptr;
 
@@ -11,6 +13,7 @@ pub static mut NEXT_TCB: *mut TCB = ptr::null_mut();
 pub trait Scheduler {
     fn schedule(&mut self);
     fn add_thread(&mut self, thread: TCB);
+    #[allow(dead_code)]
     fn remove_thread(&mut self, thread: ThreadId);
     fn tick(&mut self);
     fn sleep(&mut self, ms: u32);
@@ -30,6 +33,7 @@ pub trait SchedulePolicy {
 
     // Optional hooks: variants override only what they need.
     fn on_add(&mut self, _thread: &TCB) {}
+    #[allow(dead_code)]
     fn on_remove(&mut self, _id: ThreadId) {}
 }
 
@@ -148,9 +152,10 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
     }
 }
 
-pub struct RoundRobin;
+#[allow(dead_code)]
+pub struct RoundRobinPolicy;
 
-impl SchedulePolicy for RoundRobin {
+impl SchedulePolicy for RoundRobinPolicy {
     fn pick_next(
         &mut self,
         threads: &SimpleList<TCB>,
@@ -167,9 +172,62 @@ impl SchedulePolicy for RoundRobin {
     }
 }
 
-pub type ActiveScheduler = SchedulerCore<RoundRobin>;
+const PRIORITY_LEVELS: usize = 8;
+pub struct PriorityPolicy {
+    priority_lists: [Vec<ThreadId>; PRIORITY_LEVELS],
+}
 
-pub static SCHEDULER: Global<ActiveScheduler> = Global::new(SchedulerCore::new(RoundRobin));
+impl PriorityPolicy {
+    pub const fn new() -> Self {
+        Self {
+            priority_lists: [const { Vec::new() }; PRIORITY_LEVELS],
+        }
+    }
+}
+
+impl SchedulePolicy for PriorityPolicy {
+    fn on_add(&mut self, thread: &TCB) {
+        self.priority_lists[thread.priority as usize].push(thread.id);
+    }
+
+    fn on_remove(&mut self, id: ThreadId) {
+        for list in &mut self.priority_lists {
+            if let Some(index) = list.iter().position(|&thread_id| thread_id == id) {
+                list.remove(index);
+                break;
+            }
+        }
+    }
+
+    fn pick_next(
+        &mut self,
+        threads: &SimpleList<TCB>,
+        current: Option<ThreadId>,
+    ) -> Option<ThreadId> {
+        for list in self.priority_lists.iter() {
+            if !list.is_empty() {
+                let len = list.len();
+                let start = current
+                    .and_then(|id| list.iter().position(|&thread_id| thread_id == id))
+                    .map_or(0, |index| (index + 1) % len);
+                if let Some(index) = (0..len).map(|o| (start + o) % len).find(|&i| {
+                    matches!(
+                        threads[list[i]].as_ref(),
+                        Some(t) if t.state == ThreadState::Ready
+                    )
+                }) {
+                    return Some(list[index]);
+                }
+            }
+        }
+        None
+    }
+}
+
+pub type ActiveScheduler = SchedulerCore<PriorityPolicy>;
+
+pub static SCHEDULER: Global<ActiveScheduler> =
+    Global::new(SchedulerCore::new(PriorityPolicy::new()));
 
 /// Safety: caller must not hold another reference to the scheduler.
 pub unsafe fn scheduler() -> &'static mut ActiveScheduler {

@@ -289,6 +289,7 @@ unsafe impl Sync for Uarte {}
 
 pub struct Uarte {
     semaphore: Semaphore,
+    interrupt_semaphore: Semaphore,
     regs: Mmio<UartRegs>,
 }
 
@@ -301,35 +302,70 @@ impl Uarte {
     const unsafe fn new(base_address: usize) -> Self {
         Self {
             semaphore: Semaphore::with_count(1),
+            interrupt_semaphore: Semaphore::with_count(0),
             regs: unsafe { Mmio::new(base_address) },
         }
     }
 
     pub fn send(&self, buffer: &[u8]) {
-        self.semaphore.with(|| {
-            let regs = &*self.regs;
-            // Setup EasyDMA registers
-            regs.txd.ptr.write(buffer.as_ptr() as u32);
-            regs.txd.maxcnt.write(
-                Count16Builder::new()
-                    .with_count(buffer.len().saturating_cast::<u16>())
-                    .build(),
-            );
+        self.semaphore.take();
 
-            // Trigger the transmission and busy wait until it's done
-            regs.start_tx.trigger();
-            while !regs.endtx.is_set() {}
-            regs.endtx.clear();
-        });
+        let regs = &*self.regs;
+        // Setup EasyDMA registers
+        regs.txd.ptr.write(buffer.as_ptr() as u32);
+        regs.txd.maxcnt.write(
+            Count16Builder::new()
+                .with_count(buffer.len().saturating_cast::<u16>())
+                .build(),
+        );
+
+        // Enable the interrupt for ENDTX and begin the transmission
+        // The ENDTX interrupt handler will release the semaphore.
+        regs.inten.write(
+            UartInterruptBuilder {
+                this: regs.inten.read(),
+            }
+            .with_endtx(true)
+            .build(),
+        );
+        regs.start_tx.trigger();
+        self.interrupt_semaphore.take();
+        self.semaphore.give();
     }
+
+    fn handle_interrupt(&self) {
+        let regs = &*self.regs;
+        if regs.endtx.is_set() {
+            regs.endtx.clear();
+            regs.inten.write(
+                UartInterruptBuilder {
+                    this: regs.inten.read(),
+                }
+                .with_endtx(false)
+                .build(),
+            );
+            self.interrupt_semaphore.give();
+        }
+    }
+}
+
+pub extern "C" fn uarte0_handler() {
+    // Acknowledge the interrupt
+    let core_periph = core_periph();
+    unsafe { core_periph.NVIC.icpr[0].write(1 << Interrupt::UARTE0_UART0.number()) };
+
+    // Let the UARTE peripheral handle the interrupt
+    UARTE0.handle_interrupt();
 }
 
 use core::{cell::UnsafeCell, marker::PhantomData, ptr};
 
 use bitfields::{bitfield, bitflag};
+use cortex_m::interrupt::InterruptNumber;
 use saturating_cast::SaturatingCast;
 
 use crate::semaphore::Semaphore;
+use crate::vectors::{core_periph, Interrupt};
 
 /// # Safety
 /// This function should not be called post-OS initialization.
@@ -366,4 +402,11 @@ pub fn uart_init() {
 
     let uart_enable = UartEnableBuilder::new().with_enable(true).build();
     regs.enable.write(uart_enable);
+
+    let core_periph = core_periph();
+    unsafe { core_periph.NVIC.set_priority(Interrupt::UARTE0_UART0, 1) };
+    // clear out all UARTE peripheral interrupt enables
+    regs.inten.write(UartInterrupt(0));
+    // enable the interrupt in NVIC
+    unsafe { core_periph.NVIC.iser[0].modify(|w| w | (1 << Interrupt::UARTE0_UART0.number())) };
 }

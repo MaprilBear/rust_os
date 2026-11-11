@@ -7,6 +7,7 @@ use crate::{
     os_add_thread, os_init, os_start,
     threads::{user_thread1, user_thread2},
     uarte::uart_init,
+    vectors::CORE_PERIPHERALS,
 };
 
 unsafe extern "C" {
@@ -87,11 +88,14 @@ unsafe fn initialize_memory() {
 
 #[no_mangle]
 pub extern "C" fn ResetHandler() -> ! {
-    unsafe { initialize_memory() };
     dprintln!("entered reset");
+    unsafe { initialize_memory() };
+    unsafe {
+        *CORE_PERIPHERALS.as_ptr() = Some(cortex_m::peripheral::Peripherals::take().unwrap())
+    };
     os_init();
-    os_add_thread(user_thread1, 1024);
-    os_add_thread(user_thread2, 1024);
+    os_add_thread(user_thread1, 1024, 0);
+    os_add_thread(user_thread2, 1024, 1);
     uart_init();
     os_start();
 }

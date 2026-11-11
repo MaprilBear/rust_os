@@ -20,6 +20,7 @@ pub struct Semaphore {
 // critical sections.
 unsafe impl Sync for Semaphore {}
 
+#[allow(dead_code)]
 impl Semaphore {
     pub const fn with_count(count: isize) -> Self {
         Self {
