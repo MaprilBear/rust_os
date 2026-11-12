@@ -288,8 +288,9 @@ unsafe impl Send for Uarte {}
 unsafe impl Sync for Uarte {}
 
 pub struct Uarte {
-    semaphore: Semaphore,
-    interrupt_semaphore: Semaphore,
+    regs_semaphore: Semaphore,
+    tx_semaphore: Semaphore,
+    rx_semaphore: Semaphore,
     regs: Mmio<UartRegs>,
 }
 
@@ -301,14 +302,15 @@ pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 impl Uarte {
     const unsafe fn new(base_address: usize) -> Self {
         Self {
-            semaphore: Semaphore::with_count(1),
-            interrupt_semaphore: Semaphore::with_count(0),
+            regs_semaphore: Semaphore::with_count(1),
+            tx_semaphore: Semaphore::with_count(0),
+            rx_semaphore: Semaphore::with_count(0),
             regs: unsafe { Mmio::new(base_address) },
         }
     }
 
     pub fn send(&self, buffer: &[u8]) {
-        self.semaphore.take();
+        self.regs_semaphore.take();
 
         let regs = &*self.regs;
         // Setup EasyDMA registers
@@ -329,8 +331,41 @@ impl Uarte {
             .build(),
         );
         regs.start_tx.trigger();
-        self.interrupt_semaphore.take();
-        self.semaphore.give();
+        self.regs_semaphore.give();
+        self.tx_semaphore.take();
+    }
+
+    /// Read bytes into the provided buffer until full, or until the given timeout is exceeded
+    pub fn receive(&self, buffer: &[u8], timeout_ms: Option<u32>) {
+        self.regs_semaphore.take();
+
+        // TODO: Establish PPI links with TIMER0 and configure the timeout
+        // put timeout into CC[0]
+        // PPI - UART RXSTART -> TIMER START
+        // PPI - TIMER COMPARE[0] -> UART RXSTOP
+        // PPI - TIMER COMPARE[0] -> TIMER CLEAR
+
+        // Setup EasyDMA registers
+        let regs = &*self.regs;
+        regs.rxd.ptr.write(buffer.as_ptr() as u32);
+        regs.rxd.maxcnt.write(
+            Count16Builder::new()
+                .with_count(buffer.len().saturating_cast::<u16>())
+                .build(),
+        );
+
+        // Enable the interrupt for ENDRX and begin the reception
+        // The UARTE interrupt handler will release the semaphore and unblock this thread.
+        regs.inten.write(
+            UartInterruptBuilder {
+                this: regs.inten.read(),
+            }
+            .with_endrx(true)
+            .build(),
+        );
+        regs.start_rx.trigger();
+        self.regs_semaphore.give();
+        self.rx_semaphore.take();
     }
 
     fn handle_interrupt(&self) {
@@ -344,7 +379,18 @@ impl Uarte {
                 .with_endtx(false)
                 .build(),
             );
-            self.interrupt_semaphore.give();
+            self.tx_semaphore.give();
+        }
+        if regs.endrx.is_set() {
+            regs.endrx.clear();
+            regs.inten.write(
+                UartInterruptBuilder {
+                    this: regs.inten.read(),
+                }
+                .with_endrx(false)
+                .build(),
+            );
+            self.rx_semaphore.give()
         }
     }
 }
