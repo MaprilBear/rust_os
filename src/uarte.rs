@@ -291,7 +291,7 @@ impl Uarte {
                 // Timer setup. Stop and clear first so a leftover run can't carry over.
                 timer.regs.stop.trigger();
                 timer.regs.clear.trigger();
-                timer.regs.bitmode.write(TimerBitmode::BIT_32);
+                // timer.regs.bitmode.write(TimerBitmode::BIT_32);
                 timer.regs.mode.write(TimerMode::TIMER);
                 timer
                     .regs
@@ -307,12 +307,12 @@ impl Uarte {
                 }
                 // Note: Renode's TIMER model does not implement SHORTS, so on the simulator
                 // these have no effect. The PPI forks below do the same job there.
-                timer.regs.shorts.write(
-                    TimerShortBuilder::new()
-                        .with_compare0_clear(true)
-                        .with_compare0_stop(true)
-                        .build(),
-                );
+                // timer.regs.shorts.write(
+                //     TimerShortBuilder::new()
+                //         .with_compare0_clear(true)
+                //         .with_compare0_stop(true)
+                //         .build(),
+                // );
                 timer.regs.compare0.clear();
 
                 // PPI - UART RXSTARTED -> TIMER CLEAR & START
