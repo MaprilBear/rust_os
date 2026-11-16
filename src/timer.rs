@@ -102,6 +102,7 @@ pub struct TimerRegs {
     pub cc5: Reg<u32, Rw>,              // 0x554
 }
 
+#[allow(unused)]
 const TIMER0_BASE: usize = 0x40008000;
 #[allow(unused)]
 const TIMER1_BASE: usize = 0x40009000;
@@ -112,6 +113,7 @@ const TIMER3_BASE: usize = 0x4001A000;
 #[allow(unused)]
 const TIMER4_BASE: usize = 0x4001B000;
 
+#[allow(unused)]
 pub struct Timer {
     pub regs_semaphore: Semaphore,
     pub regs: Mmio<TimerRegs>,
@@ -122,6 +124,7 @@ unsafe impl Send for Timer {}
 // Timer peripherals are thread safe via semaphores
 unsafe impl Sync for Timer {}
 
+#[allow(unused)]
 pub static TIMER0: Timer = unsafe { Timer::new(TIMER0_BASE) };
 #[allow(unused)]
 pub static TIMER1: Timer = unsafe { Timer::new(TIMER1_BASE) };

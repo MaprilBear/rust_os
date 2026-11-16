@@ -12,4 +12,8 @@ impl<T> Global<T> {
     pub fn as_ptr(&self) -> *mut T {
         self.0.get()
     }
+    /// Volatile read, for data written by DMA.
+    pub fn read(&self) -> T {
+        unsafe { self.0.get().read_volatile() }
+    }
 }

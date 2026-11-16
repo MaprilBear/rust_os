@@ -142,8 +142,10 @@ pub struct PpiReg {
     pub fork31_tep: Reg<u32, Rw>,       // 0x98C
 }
 
+#[allow(unused)]
 const PPI_BASE: usize = 0x4001F000;
 
+#[allow(unused)]
 pub struct Ppi {
     pub regs_semaphore: Semaphore,
     pub regs: Mmio<PpiReg>,
@@ -154,8 +156,10 @@ unsafe impl Send for Ppi {}
 // The PPI peripheral is thread safe via semaphores
 unsafe impl Sync for Ppi {}
 
+#[allow(unused)]
 pub static PPI: Ppi = unsafe { Ppi::new(PPI_BASE) };
 
+#[allow(unused)]
 impl Ppi {
     pub const unsafe fn new(base: usize) -> Self {
         Self {

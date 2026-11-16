@@ -10,6 +10,7 @@
 #[macro_use]
 mod debugcon;
 
+mod fifo;
 mod global;
 mod mmio;
 mod ppi;
@@ -199,4 +200,9 @@ extern "C" fn pick_next_thread() {
 fn os_sleep(ms: u32) {
     unsafe { scheduler().sleep(ms) };
     os_yield();
+}
+
+pub fn os_get_frc() -> u32 {
+    let core_periph = core_periph();
+    core_periph.SYST.cvr.read()
 }

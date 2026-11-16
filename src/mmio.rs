@@ -70,6 +70,7 @@ impl<T> Mmio<T> {
         Self(addr as *const T) // int->ptr cast is fine in const; deref is not
     }
 
+    #[allow(unused)]
     pub const fn as_ptr(&self) -> *const T {
         self.0
     }
