@@ -1,2 +1,3 @@
 include @renode/common.resc
 start
+uart_connect sysbus.uart0

@@ -1,5 +1,3 @@
-use alloc::format;
-
 use crate::{os_sleep, uarte::UARTE0};
 
 pub extern "C" fn user_thread1() -> ! {
@@ -11,9 +9,11 @@ pub extern "C" fn user_thread1() -> ! {
 
 pub extern "C" fn user_thread2() -> ! {
     loop {
-        let buffer: [u8; 8] = [0; 8];
-        UARTE0.receive(&buffer, None);
-        let input = core::str::from_utf8(&buffer).unwrap_or("Bad input");
-        UARTE0.send(format!("Received: {}", input).as_bytes());
+        let mut buffer: [u8; 8] = [0; 8];
+        let chars = UARTE0.receive(&mut buffer, Some(10));
+        if chars != 0 {
+            let input = core::str::from_utf8(&buffer).unwrap_or("Bad input");
+            UARTE0.send(input.as_bytes());
+        }
     }
 }

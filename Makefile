@@ -3,7 +3,7 @@ TARGET     := thumbv7em-none-eabihf
 PROFILE    ?= debug
 BIN        := kernel
 ELF        := target/$(TARGET)/$(PROFILE)/$(BIN)
-GDB_PORT   ?= 3334
+GDB_PORT   ?= 3333
 
 # HOME must be writable: Renode keeps its config and temp files there.
 DOCKER_RUN := docker run --rm -it \

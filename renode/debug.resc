@@ -1,4 +1,4 @@
 include @renode/common.resc
 
 # Keep the CPU halted until GDB has installed breakpoints and resumes it.
-machine StartGdbServer 3334 true
+machine StartGdbServer 3333 true

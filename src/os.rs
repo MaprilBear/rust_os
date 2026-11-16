@@ -11,11 +11,14 @@
 mod debugcon;
 
 mod global;
+mod mmio;
+mod ppi;
 mod reset;
 mod scheduler;
 mod semaphore;
 mod simple_list;
 mod threads;
+mod timer;
 mod uarte;
 mod vectors;
 
@@ -185,8 +188,12 @@ pub extern "C" fn context_switch() {
 }
 
 fn os_yield() {
-    unsafe { scheduler().schedule() };
     context_switch();
+}
+
+#[no_mangle]
+extern "C" fn pick_next_thread() {
+    unsafe { scheduler().schedule() }
 }
 
 fn os_sleep(ms: u32) {

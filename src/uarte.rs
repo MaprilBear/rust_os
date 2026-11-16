@@ -2,45 +2,9 @@
 // UART register definitions
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-struct Ro;
-struct Wo;
-struct Rw;
-trait Readable {}
-trait Writable {}
-impl Readable for Ro {}
-impl Readable for Rw {}
-impl Writable for Wo {}
-impl Writable for Rw {}
-
-#[repr(transparent)]
-struct Reg<T: Copy, A>(UnsafeCell<T>, PhantomData<A>);
-impl<T: Copy, A: Readable> Reg<T, A> {
-    fn read(&self) -> T {
-        unsafe { ptr::read_volatile(self.0.get()) }
-    }
-}
-impl<T: Copy, A: Writable> Reg<T, A> {
-    fn write(&self, v: T) {
-        unsafe { ptr::write_volatile(self.0.get(), v) }
-    }
-}
-
-struct Task(Reg<u32, Wo>);
-impl Task {
-    fn trigger(&self) {
-        self.0.write(1)
-    }
-}
-
-struct Event(Reg<u32, Rw>);
-impl Event {
-    fn is_set(&self) -> bool {
-        self.0.read() & 1 != 0
-    }
-    fn clear(&self) {
-        self.0.write(0)
-    }
-}
+use crate::mmio::{Count16, Count16Builder, Count4Builder, Event, Mmio, Reg, Ro, Rw, Task};
+use crate::ppi::{ChannelRegBuilder, PPI};
+use crate::timer::{TimerBitmode, TimerMode, TimerRegs, TimerShortBuilder, TIMER0};
 
 #[bitfield(u32)]
 struct UartShorts {
@@ -154,14 +118,6 @@ impl UartBaudRate {
     const B1M: Self = Self(0x1000_0000);
 }
 
-#[bitfield(u32)]
-struct Count16 {
-    #[bits(16)]
-    count: u16,
-    #[bits(16)]
-    __: u32,
-}
-
 #[repr(C)]
 struct Dma {
     ptr: Reg<u32, Rw>,
@@ -198,7 +154,7 @@ struct UartConfig {
 }
 
 #[repr(C)]
-struct UartRegs {
+struct UarteRegs {
     start_rx: Task,        // 0x000
     stop_rx: Task,         // 0x004
     start_tx: Task,        // 0x008
@@ -256,30 +212,14 @@ const UART0E_BASE: usize = 0x40002000;
 #[allow(unused)]
 const UART1E_BASE: usize = 0x40028000;
 
+/// TIMER0 prescaler used for the RX timeout: 16 MHz / 2^4 = 1 MHz, so one tick is 1 us and
+/// one millisecond is 1000 ticks. A 32-bit counter then covers about 71 minutes.
+const TIMEOUT_PRESCALER: u8 = 4;
+const TIMEOUT_TICKS_PER_MS: u32 = 1_000;
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // UART Implementation
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
-use core::ops::Deref;
-
-pub struct Mmio<T>(*const T);
-
-impl<T> Mmio<T> {
-    /// # Safety
-    /// `addr` must be the address of a valid, live `T` (the peripheral's
-    /// register block), and only one owner may exist per peripheral.
-    pub const unsafe fn new(addr: usize) -> Self {
-        Self(addr as *const T) // int->ptr cast is fine in const; deref is not
-    }
-}
-
-impl<T> Deref for Mmio<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        // Sound by the contract on `new`; evaluated at runtime, not in const.
-        unsafe { &*self.0 }
-    }
-}
 
 // The handle can move between contexts; only one exists per peripheral.
 unsafe impl Send for Uarte {}
@@ -291,14 +231,13 @@ pub struct Uarte {
     regs_semaphore: Semaphore,
     tx_semaphore: Semaphore,
     rx_semaphore: Semaphore,
-    regs: Mmio<UartRegs>,
+    regs: Mmio<UarteRegs>,
 }
 
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
 #[allow(unused)]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
-// TODO: switch to an interrupt based mechanism
 impl Uarte {
     const unsafe fn new(base_address: usize) -> Self {
         Self {
@@ -321,76 +260,179 @@ impl Uarte {
                 .build(),
         );
 
-        // Enable the interrupt for ENDTX and begin the transmission
-        // The ENDTX interrupt handler will release the semaphore.
-        regs.inten.write(
-            UartInterruptBuilder {
-                this: regs.inten.read(),
-            }
-            .with_endtx(true)
-            .build(),
-        );
+        // Start from a clean ENDTX, enable only its interrupt (INTENSET is write-1-to-enable, so
+        // pass just the bit we want rather than a read-modify-write of INTEN), and begin the
+        // transmission. The ENDTX interrupt handler will release the semaphore.
+        regs.endtx.clear();
+        regs.intenset
+            .write(UartInterruptBuilder::new().with_endtx(true).build());
         regs.start_tx.trigger();
         self.regs_semaphore.give();
         self.tx_semaphore.take();
     }
 
-    /// Read bytes into the provided buffer until full, or until the given timeout is exceeded
-    pub fn receive(&self, buffer: &[u8], timeout_ms: Option<u32>) {
+    /// Read bytes into the provided buffer until full, or until the given timeout is exceeded.
+    /// Returns the number of bytes received.
+    pub fn receive(&self, buffer: &mut [u8], timeout_ms: Option<u32>) -> u16 {
         self.regs_semaphore.take();
 
-        // TODO: Establish PPI links with TIMER0 and configure the timeout
-        // put timeout into CC[0]
-        // PPI - UART RXSTART -> TIMER START
-        // PPI - TIMER COMPARE[0] -> UART RXSTOP
-        // PPI - TIMER COMPARE[0] -> TIMER CLEAR
+        let regs = &*self.regs;
+        let timer = &TIMER0;
+        let ppi = &PPI;
+
+        // Clear every event this receive depends on before anything is armed, so a stale flag
+        // from a previous call can't wake us early or be mistaken for a new one.
+        regs.rxto.clear();
+        regs.endrx.clear();
+        regs.rxstarted.clear();
+
+        ppi.regs_semaphore.with(|| {
+            timer.regs_semaphore.with(|| {
+                // Timer setup. Stop and clear first so a leftover run can't carry over.
+                timer.regs.stop.trigger();
+                timer.regs.clear.trigger();
+                timer.regs.bitmode.write(TimerBitmode::BIT_32);
+                timer.regs.mode.write(TimerMode::TIMER);
+                timer
+                    .regs
+                    .prescaler
+                    .write(Count4Builder::new().with_count(TIMEOUT_PRESCALER).build());
+                if let Some(timeout_ms) = timeout_ms {
+                    timer
+                        .regs
+                        .cc0
+                        .write(timeout_ms.saturating_mul(TIMEOUT_TICKS_PER_MS));
+                } else {
+                    timer.regs.cc0.write(u32::MAX);
+                }
+                // Note: Renode's TIMER model does not implement SHORTS, so on the simulator
+                // these have no effect. The PPI forks below do the same job there.
+                timer.regs.shorts.write(
+                    TimerShortBuilder::new()
+                        .with_compare0_clear(true)
+                        .with_compare0_stop(true)
+                        .build(),
+                );
+                timer.regs.compare0.clear();
+
+                // PPI - UART RXSTARTED -> TIMER CLEAR & START
+                // If UART reception starts, clear the timer and start it
+                ppi.regs.ch0_eep.write(
+                    (self.regs.as_ptr() as usize + core::mem::offset_of!(UarteRegs, rxstarted))
+                        as u32,
+                );
+                ppi.regs.ch0_tep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, clear)) as u32,
+                );
+                ppi.regs.fork0_tep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, start)) as u32,
+                );
+
+                // PPI - TIMER COMPARE[0] -> UART RXSTOP & CLEAR
+                // If the timeout is reached, stop UART reception and clear the timer
+                ppi.regs.ch1_eep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, compare0))
+                        as u32,
+                );
+                ppi.regs.ch1_tep.write(
+                    (self.regs.as_ptr() as usize + core::mem::offset_of!(UarteRegs, stop_rx))
+                        as u32,
+                );
+                ppi.regs.fork1_tep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, clear)) as u32,
+                );
+
+                // PPI - UART ENDRX -> TIMER STOP & CLEAR
+                // If UART RX stops on its own, stop the timer and clear it
+                ppi.regs.ch2_eep.write(
+                    (self.regs.as_ptr() as usize + core::mem::offset_of!(UarteRegs, endrx)) as u32,
+                );
+                ppi.regs.ch2_tep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, stop)) as u32,
+                );
+                ppi.regs.fork2_tep.write(
+                    (timer.regs.as_ptr() as usize + core::mem::offset_of!(TimerRegs, clear)) as u32,
+                );
+
+                ppi.regs.chenset.write(
+                    ChannelRegBuilder::new()
+                        .with_ch0(true)
+                        .with_ch1(true)
+                        .with_ch2(true)
+                        .build(),
+                );
+            });
+        });
 
         // Setup EasyDMA registers
-        let regs = &*self.regs;
-        regs.rxd.ptr.write(buffer.as_ptr() as u32);
+        regs.rxd.ptr.write(buffer.as_mut_ptr() as u32);
         regs.rxd.maxcnt.write(
             Count16Builder::new()
                 .with_count(buffer.len().saturating_cast::<u16>())
                 .build(),
         );
 
-        // Enable the interrupt for ENDRX and begin the reception
-        // The UARTE interrupt handler will release the semaphore and unblock this thread.
-        regs.inten.write(
-            UartInterruptBuilder {
-                this: regs.inten.read(),
-            }
-            .with_endrx(true)
-            .build(),
+        // Enable the ENDRX and RXTO interrupts and begin the reception. Either one means this
+        // receive is finished (ENDRX: buffer full; RXTO: stopped by the timeout), and the
+        // interrupt handler releases the semaphore for whichever arrives first. INTENSET only
+        // enables the bits written as 1, so the bits are passed directly.
+        regs.intenset.write(
+            UartInterruptBuilder::new()
+                .with_endrx(true)
+                .with_rxto(true)
+                .build(),
         );
         regs.start_rx.trigger();
         self.regs_semaphore.give();
         self.rx_semaphore.take();
+
+        // Tear down: disable the PPI channels, then stop and clear the timer in software since
+        // Renode's TIMER ignores SHORTS and the forks may not have run.
+        ppi.regs_semaphore.with(|| {
+            timer.regs_semaphore.with(|| {
+                ppi.regs.chenclear.write(
+                    ChannelRegBuilder::new()
+                        .with_ch0(true)
+                        .with_ch1(true)
+                        .with_ch2(true)
+                        .build(),
+                );
+                timer.regs.stop.trigger();
+                timer.regs.clear.trigger();
+                timer.regs.compare0.clear();
+            });
+        });
+
+        self.regs.rxd.amount.read().count()
     }
 
     fn handle_interrupt(&self) {
         let regs = &*self.regs;
-        if regs.endtx.is_set() {
+
+        if regs.endtx.generated() {
             regs.endtx.clear();
-            regs.inten.write(
-                UartInterruptBuilder {
-                    this: regs.inten.read(),
-                }
-                .with_endtx(false)
-                .build(),
-            );
+            // INTENCLR: writing 1 disables that interrupt, writing 0 does nothing. Pass only
+            // the bit(s) being disabled.
+            regs.intenclr
+                .write(UartInterruptBuilder::new().with_endtx(true).build());
             self.tx_semaphore.give();
         }
-        if regs.endrx.is_set() {
+
+        // Read both RX events once. Which of ENDRX / RXTO the peripheral raises after STOPRX
+        // can differ (and arrival order can vary), so treat either as "this receive is done",
+        // clear and disable both, and release the semaphore exactly once.
+        let endrx = regs.endrx.generated();
+        let rxto = regs.rxto.generated();
+        if endrx || rxto {
             regs.endrx.clear();
-            regs.inten.write(
-                UartInterruptBuilder {
-                    this: regs.inten.read(),
-                }
-                .with_endrx(false)
-                .build(),
+            regs.rxto.clear();
+            regs.intenclr.write(
+                UartInterruptBuilder::new()
+                    .with_endrx(true)
+                    .with_rxto(true)
+                    .build(),
             );
-            self.rx_semaphore.give()
+            self.rx_semaphore.give();
         }
     }
 }
@@ -404,8 +446,6 @@ pub extern "C" fn uarte0_handler() {
     UARTE0.handle_interrupt();
 }
 
-use core::{cell::UnsafeCell, marker::PhantomData, ptr};
-
 use bitfields::{bitfield, bitflag};
 use cortex_m::interrupt::InterruptNumber;
 use saturating_cast::SaturatingCast;
@@ -416,7 +456,6 @@ use crate::vectors::{core_periph, Interrupt};
 /// # Safety
 /// This function should not be called post-OS initialization.
 pub fn uart_init() {
-    dprintln!("{:p}", UARTE0.regs.0);
     // Setup a basic non conflicting PSEL config (no RTS/CTS)
     // TODO: Allow this to be user defined
     let psel_rts = UartPselBuilder::new().with_disconnected(true).build();

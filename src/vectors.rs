@@ -264,6 +264,11 @@ global_asm!(
     // The first exception frame was stacked on MSP while starting from ResetHandler.
     "add sp, sp, #32",
     "2:",
+    "bl pick_next_thread", // clobbers r0-r3, r12, lr
+    "ldr r0, =CURR_TCB",
+    "ldr r1, =NEXT_TCB",
+    "ldr r1, [r1]",
+    "str r1, [r0]",
     "ldr r1, =NEXT_TCB",
     "ldr r1, [r1]",
     "str r1, [r0]",
