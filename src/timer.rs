@@ -5,6 +5,8 @@ use crate::{
     semaphore::Semaphore,
 };
 
+use crate::semaphore;
+
 #[bitfield(u32)]
 pub struct TimerShort {
     pub compare0_clear: bool,
@@ -138,7 +140,7 @@ pub static TIMER4: Timer = unsafe { Timer::new(TIMER4_BASE) };
 impl Timer {
     pub const unsafe fn new(base: usize) -> Self {
         Self {
-            regs_semaphore: Semaphore::with_count(1),
+            regs_semaphore: semaphore!(1),
             regs: unsafe { Mmio::new(base) },
         }
     }

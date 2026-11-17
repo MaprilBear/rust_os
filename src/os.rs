@@ -1,9 +1,7 @@
 #![allow(future_incompatible)]
-// TODO: Add mutexes
-// TODO: Make the scheduler priority based
 // TODO: Support cooperative and premptive threads like Zephyr
 // TODO: Implement workqueues
-// TODO: Implement UART driver
+// TODO: Move kernel memory to a specific page
 #![no_std]
 #![no_main]
 
@@ -18,6 +16,7 @@ mod reset;
 mod scheduler;
 mod semaphore;
 mod simple_list;
+mod syscall;
 mod threads;
 mod timer;
 mod uarte;
@@ -25,19 +24,28 @@ mod vectors;
 
 extern crate alloc;
 
-use alloc::{boxed::Box, vec::Vec};
 use bitfields::bitflag;
+use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
+use core::ptr::addr_of;
 use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
 use crate::scheduler::{scheduler, Scheduler};
 
+/// Kernel heap. Backed by a static in `.bss`, so it lives in KRAM (privileged only).
 #[global_allocator]
 static HEAP: Heap = Heap::empty();
 
-#[repr(C, align(8))] // AAPCS requires the SP to be 8-byte aligned
-struct Stack(Vec<u32>);
+/// User heap. Only thread stacks come from here. The allocator's bookkeeping
+/// struct lives in KRAM, but the memory it hands out is the tail of URAM, which
+/// unprivileged thread code can access.
+static USER_HEAP: Heap = Heap::empty();
+
+unsafe extern "C" {
+    static _suser_heap: u8;
+    static _euser_heap: u8;
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ThreadState {
@@ -47,11 +55,15 @@ pub enum ThreadState {
     Sleeping,
 }
 
+// PendSVHandler stores the saved SP at byte offset 4 (`str r2, [r1, #4]`), so
+// `priority` then `sp` must stay the first two fields.
 #[repr(C)]
 pub struct TCB {
     priority: u8,
     sp: *mut u32,
-    stack: Box<Stack>,
+    /// Base and layout of the stack allocation in the user heap.
+    stack_base: *mut u8,
+    stack_layout: Layout,
     state: ThreadState,
     id: ThreadId,
     sleep_ms: u32,
@@ -92,25 +104,34 @@ pub extern "C" fn SystickHandler() {
 // |
 // V 0x0000_0000
 type ThreadEntry = extern "C" fn() -> !;
-fn create_tcb(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
-    let mut stack = Box::new(Stack(Vec::with_capacity(stack_size)));
+fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
+    // Keep the top of the stack 8-byte aligned (AAPCS).
+    let stack_words = (stack_words & !1).max(32);
+    let layout = Layout::from_size_align(stack_words * 4, 8).unwrap();
+
     unsafe {
-        let stack_top: *mut u32 = stack.0.as_mut_ptr().add(stack_size);
+        // Zeroed, so the fabricated R0-R12 frame slots start at 0.
+        let base = USER_HEAP.alloc_zeroed(layout);
+        assert!(!base.is_null(), "out of user memory for thread stack");
+
+        let stack_top = base.add(stack_words * 4) as *mut u32;
         let sp = stack_top.sub(16);
         let lr = stack_top.sub(3);
         let pc = stack_top.sub(2);
         let psr = stack_top.sub(1);
 
-        // Set up the LR, PC, and PSR
-        *lr = 0xFFFF_FFFF; // EXC_RETURN for standard frame, default register, thumb logic
-        *pc = thread_entry as usize as u32;
+        // Thread entries are `-> !`, so this LR is never used. Poison it so a
+        // bad return faults loudly instead of running garbage.
+        *lr = 0xFFFF_FFFF;
+        *pc = (thread_entry as usize as u32) | 1; // Thumb bit
         *psr = 1 << 24; // Set thumb bit
 
         scheduler().add_thread(TCB {
             id: 0,
             priority,
             sp,
-            stack,
+            stack_base: base,
+            stack_layout: layout,
             state: ThreadState::Ready,
             sleep_ms: 0,
         });
@@ -143,6 +164,13 @@ fn start_systick() {
             cortex_m::peripheral::scb::SystemHandler::SysTick,
             Nrf52840InterruptPriority::Six.into_bits(),
         );
+        // Same priority as SysTick, so a syscall (which touches the scheduler) and
+        // the tick can never preempt each other; both stay above PendSV, so a
+        // context switch never lands in the middle of either.
+        core_periph.SCB.set_priority(
+            cortex_m::peripheral::scb::SystemHandler::SVCall,
+            Nrf52840InterruptPriority::Six.into_bits(),
+        );
         // PendSV must not preempt SysTick before the active exception can return.
         core_periph.SCB.set_priority(
             cortex_m::peripheral::scb::SystemHandler::PendSV,
@@ -153,15 +181,21 @@ fn start_systick() {
     }
 }
 
+// Runs unprivileged.
+#[link_section = ".user_text"]
 extern "C" fn idle_thread() -> ! {
     loop {
-        os_yield();
+        unsafe { asm!("wfe") };
     }
 }
 
 fn os_init() {
     unsafe {
         embedded_alloc::init!(HEAP, 16000);
+
+        let start = addr_of!(_suser_heap) as usize;
+        let end = addr_of!(_euser_heap) as usize;
+        USER_HEAP.init(start, end - start);
     }
     os_add_thread(idle_thread, 1024, 7);
 }
@@ -170,9 +204,12 @@ fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
     create_tcb(thread_entry, stack_size, priority);
 }
 
+/// Called once from privileged boot code. Boot code cannot drop privilege
+/// itself: after `msr control` the next instruction would already run
+/// unprivileged on the kernel stack. Instead we trap into SVC, where handler
+/// mode sets nPRIV and PendSV exception-returns into the first thread.
 fn os_start() -> ! {
-    start_systick();
-    os_yield();
+    unsafe { asm!("svc #0") };
     panic!("os_start should never return");
 }
 
@@ -188,6 +225,7 @@ pub extern "C" fn context_switch() {
     }
 }
 
+/// Kernel-internal yield (handler mode / boot). Threads call `sys_yield`.
 fn os_yield() {
     context_switch();
 }
@@ -195,11 +233,6 @@ fn os_yield() {
 #[no_mangle]
 extern "C" fn pick_next_thread() {
     unsafe { scheduler().schedule() }
-}
-
-fn os_sleep(ms: u32) {
-    unsafe { scheduler().sleep(ms) };
-    os_yield();
 }
 
 pub fn os_get_frc() -> u32 {

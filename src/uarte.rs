@@ -5,6 +5,7 @@
 use crate::fifo::{Fifo, LockFreePolicy};
 use crate::global::Global;
 use crate::mmio::{Count16, Count16Builder, Event, Mmio, Reg, Ro, Rw, Task};
+use crate::semaphore;
 
 #[bitfield(u32)]
 struct UartShorts {
@@ -231,15 +232,17 @@ pub struct Uarte {
     regs: Mmio<UarteRegs>,
 }
 
+#[link_section = ".user_data"]
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
 #[allow(unused)]
+#[link_section = ".user_data"]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 impl Uarte {
     const unsafe fn new(base_address: usize) -> Self {
         Self {
-            regs_semaphore: Semaphore::with_count(1),
-            tx_semaphore: Semaphore::with_count(0),
+            regs_semaphore: semaphore!(1),
+            tx_semaphore: semaphore!(0),
             rx_fifo: Fifo::new(LockFreePolicy::new()),
             rx_buffer_1: Global::new([0; 1]),
             rx_buffer_2: Global::new([0; 1]),
@@ -266,8 +269,8 @@ impl Uarte {
         regs.intenset
             .write(UartInterruptBuilder::new().with_endtx(true).build());
         regs.start_tx.trigger();
-        self.regs_semaphore.give();
         self.tx_semaphore.take();
+        self.regs_semaphore.give();
     }
 
     /// Read bytes into the provided buffer until full, or until the given timeout is exceeded.
@@ -358,7 +361,7 @@ pub fn uart_init() {
     regs.enable.write(uart_enable);
 
     let core_periph = core_periph();
-    unsafe { core_periph.NVIC.set_priority(Interrupt::UARTE0_UART0, 1) };
+    unsafe { core_periph.NVIC.set_priority(Interrupt::UARTE0_UART0, 0xC0) };
     // Enable interrupts for ENDRX to handle double buffer switching
     regs.intenset
         .write(UartInterruptBuilder::new().with_endrx(true).build());

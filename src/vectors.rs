@@ -54,20 +54,20 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
     initial_sp: unsafe { &raw const _estack },
     reset: ResetHandler,
     exceptions: [
-        handler(default_handler), // 2  NMI
-        handler(default_handler), // 3  HardFault
-        handler(default_handler), // 4  MemManage
-        handler(default_handler), // 5  BusFault
-        handler(default_handler), // 6  UsageFault
-        RESERVED,                 // 7
-        RESERVED,                 // 8
-        RESERVED,                 // 9
-        RESERVED,                 // 10
-        handler(default_handler), // 11 SVCall
-        handler(default_handler), // 12 DebugMonitor
-        RESERVED,                 // 13
-        handler(PendSVHandler),   // 14 PendSV
-        handler(SystickHandler),  // 15 SysTick
+        handler(default_handler),   // 2  NMI
+        handler(default_handler),   // 3  HardFault
+        handler(memmanage_handler), // 4  MemManage
+        handler(default_handler),   // 5  BusFault
+        handler(default_handler),   // 6  UsageFault
+        RESERVED,                   // 7
+        RESERVED,                   // 8
+        RESERVED,                   // 9
+        RESERVED,                   // 10
+        handler(SvcHandler),        // 11 SVCall
+        handler(default_handler),   // 12 DebugMonitor
+        RESERVED,                   // 13
+        handler(PendSVHandler),     // 14 PendSV
+        handler(SystickHandler),    // 15 SysTick
     ],
     irqs: [
         handler(default_handler), // 0 POWER_CLOCK
@@ -263,6 +263,12 @@ global_asm!(
     "1:",
     // The first exception frame was stacked on MSP while starting from ResetHandler.
     "add sp, sp, #32",
+    // First switch only: drop thread mode to unprivileged. Safe to write CONTROL
+    // here (handler mode); r2 is reloaded below.
+    "mrs r2, control",
+    "orr r2, r2, #1",
+    "msr control, r2",
+    "isb",
     "2:",
     "bl pick_next_thread", // clobbers r0-r3, r12, lr
     "ldr r0, =CURR_TCB",
@@ -275,13 +281,21 @@ global_asm!(
     "ldr r2, [r1, #4]",
     "ldmia r2!, {{r4-r11}}",
     "msr PSP, r2",
-    "mvn lr, #2",
+    "mvn lr, #2", // 0xFFFF_FFFD -> EXC_RETURN to thread mode, use PSP
     "cpsie i",
     "bx lr",
 );
 
+pub extern "C" fn memmanage_handler() {
+    let cfsr = unsafe { core::ptr::read_volatile(0xE000_ED28 as *const u32) };
+    let mmfar = unsafe { core::ptr::read_volatile(0xE000_ED34 as *const u32) };
+    dprintln!("MemManage: CFSR={:#x} MMFAR={:#x}", cfsr, mmfar);
+    loop {}
+}
+
 unsafe extern "C" {
     safe fn PendSVHandler();
+    safe fn SvcHandler();
 }
 
 #[panic_handler]

@@ -5,6 +5,8 @@ use crate::{
     semaphore::Semaphore,
 };
 
+use crate::semaphore;
+
 #[bitfield(u32)]
 pub struct ChannelReg {
     ch0: bool,
@@ -163,7 +165,7 @@ pub static PPI: Ppi = unsafe { Ppi::new(PPI_BASE) };
 impl Ppi {
     pub const unsafe fn new(base: usize) -> Self {
         Self {
-            regs_semaphore: Semaphore::with_count(1),
+            regs_semaphore: semaphore!(1),
             regs: unsafe { Mmio::new(base) },
         }
     }
