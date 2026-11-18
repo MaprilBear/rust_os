@@ -2,7 +2,7 @@
 :description: Shared machine setup for run.resc and debug.resc
 
 # Path to the ELF; override with `-e "$bin=@path"` (see run.sh) or edit here.
-$bin?=@target/thumbv7em-none-eabihf/debug/kernel
+$bin?=@target/thumbv7em-none-eabihf/debug/rust_os
 
 mach create "nrf52840"
 machine LoadPlatformDescription @renode/nrf52840.repl

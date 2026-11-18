@@ -1,9 +1,7 @@
-use crate::{
-    syscall::{sys_sleep, sys_yield},
-    uarte::UARTE0,
-};
+use userlib::{sys_sleep, sys_yield};
 
-#[link_section = ".user_text"]
+use crate::uarte::UARTE0;
+
 pub extern "C" fn user_thread1() -> ! {
     loop {
         //sys_uart_write(b"Hello, UART!\n");
@@ -11,7 +9,6 @@ pub extern "C" fn user_thread1() -> ! {
     }
 }
 
-#[link_section = ".user_text"]
 pub extern "C" fn user_thread2() -> ! {
     loop {
         let mut buffer: [u8; 8] = [0; 8];

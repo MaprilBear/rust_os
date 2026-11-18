@@ -3,7 +3,5 @@ target = "thumbv7em-none-eabihf"
 
 [target.thumbv7em-none-eabihf]
 # `cargo run` inside the container boots the kernel in Renode (nRF52840).
+# The linker script (-T link.ld) and map file are passed by app/build.rs.
 runner = "sh renode/run.sh"
-rustflags = [
-    "-C", "link-arg=-Tlink.ld",
-]

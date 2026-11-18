@@ -1,7 +1,8 @@
 use alloc::vec::Vec;
 
-use crate::{global::Global, simple_list::SimpleList, ThreadId, ThreadState, TCB};
+use crate::{simple_list::SimpleList, ThreadId, ThreadState, TCB};
 use core::ptr;
+use userlib::Global;
 
 // Globals used to identify the current and next threads for thr context switch logic
 #[no_mangle]

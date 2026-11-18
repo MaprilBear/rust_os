@@ -5,14 +5,16 @@
 //! RTC0 is IRQ 11); see the product specification for the full list.
 //!
 //! The table is placed in `.vector_table`, which `link.ld` puts at address 0.
-use core::arch::global_asm;
-use core::panic::PanicInfo;
+//!
+//! Every external interrupt goes through `irq_dispatch`, which looks up the
+//! handler the application registered with `irq_attach`. That keeps driver code
+//! (in the `app` crate, user flash) out of the kernel crate.
+use core::arch::{asm, global_asm};
 
 use cortex_m::Peripherals;
+use userlib::Global;
 
-use crate::global::Global;
 use crate::reset::ResetHandler;
-use crate::uarte::uarte0_handler;
 use crate::SystickHandler;
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
@@ -70,54 +72,54 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(SystickHandler),    // 15 SysTick
     ],
     irqs: [
-        handler(default_handler), // 0 POWER_CLOCK
-        handler(default_handler), // 1 RADIO
-        handler(uarte0_handler),  // 2 UARTE0_UART0
-        handler(default_handler), // 3 SPIM0_SPIS0_TWIM0_TWIS0
-        handler(default_handler), // 4 SPIM1_SPIS1_TWIM1_TWIS1
-        handler(default_handler), // 5 NFCT
-        handler(default_handler), // 6 GPIOTE
-        handler(default_handler), // 7 SAADC
-        handler(default_handler), // 8 TIMER0
-        handler(default_handler), // 9 TIMER1
-        handler(default_handler), // 10 TIMER2
-        handler(default_handler), // 11 RTC0
-        handler(default_handler), // 12 TEMP
-        handler(default_handler), // 13 RNG
-        handler(default_handler), // 14 ECB
-        handler(default_handler), // 15 CCM_AAR
-        handler(default_handler), // 16 WDT
-        handler(default_handler), // 17 RTC1
-        handler(default_handler), // 18 QDEC
-        handler(default_handler), // 19 COMP_LPCOMP
-        handler(default_handler), // 20 SWI0_EGU0
-        handler(default_handler), // 21 SWI1_EGU1
-        handler(default_handler), // 22 SWI2_EGU2
-        handler(default_handler), // 23 SWI3_EGU3
-        handler(default_handler), // 24 SWI4_EGU4
-        handler(default_handler), // 25 SWI5_EGU5
-        handler(default_handler), // 26 TIMER3
-        handler(default_handler), // 27 TIMER4
-        handler(default_handler), // 28 PWM0
-        handler(default_handler), // 29 PDM
-        RESERVED,                 // 30 Reserved
-        RESERVED,                 // 31 Reserved
-        handler(default_handler), // 32 MWU
-        handler(default_handler), // 33 PWM1
-        handler(default_handler), // 34 PWM2
-        handler(default_handler), // 35 SPIM2_SPIS2
-        handler(default_handler), // 36 RTC2
-        handler(default_handler), // 37 I2S
-        handler(default_handler), // 38 FPU
-        handler(default_handler), // 39 USBD
-        handler(default_handler), // 40 UARTE1
-        handler(default_handler), // 41 QSPI
-        handler(default_handler), // 42 CRYPTOCELL
-        RESERVED,                 // 43 Reserved
-        RESERVED,                 // 44 Reserved
-        handler(default_handler), // 45 PWM3
-        RESERVED,                 // 46 Reserved
-        handler(default_handler), // 47 SPIM3
+        handler(irq_dispatch), // 0 POWER_CLOCK
+        handler(irq_dispatch), // 1 RADIO
+        handler(irq_dispatch), // 2 UARTE0_UART0
+        handler(irq_dispatch), // 3 SPIM0_SPIS0_TWIM0_TWIS0
+        handler(irq_dispatch), // 4 SPIM1_SPIS1_TWIM1_TWIS1
+        handler(irq_dispatch), // 5 NFCT
+        handler(irq_dispatch), // 6 GPIOTE
+        handler(irq_dispatch), // 7 SAADC
+        handler(irq_dispatch), // 8 TIMER0
+        handler(irq_dispatch), // 9 TIMER1
+        handler(irq_dispatch), // 10 TIMER2
+        handler(irq_dispatch), // 11 RTC0
+        handler(irq_dispatch), // 12 TEMP
+        handler(irq_dispatch), // 13 RNG
+        handler(irq_dispatch), // 14 ECB
+        handler(irq_dispatch), // 15 CCM_AAR
+        handler(irq_dispatch), // 16 WDT
+        handler(irq_dispatch), // 17 RTC1
+        handler(irq_dispatch), // 18 QDEC
+        handler(irq_dispatch), // 19 COMP_LPCOMP
+        handler(irq_dispatch), // 20 SWI0_EGU0
+        handler(irq_dispatch), // 21 SWI1_EGU1
+        handler(irq_dispatch), // 22 SWI2_EGU2
+        handler(irq_dispatch), // 23 SWI3_EGU3
+        handler(irq_dispatch), // 24 SWI4_EGU4
+        handler(irq_dispatch), // 25 SWI5_EGU5
+        handler(irq_dispatch), // 26 TIMER3
+        handler(irq_dispatch), // 27 TIMER4
+        handler(irq_dispatch), // 28 PWM0
+        handler(irq_dispatch), // 29 PDM
+        RESERVED,              // 30 Reserved
+        RESERVED,              // 31 Reserved
+        handler(irq_dispatch), // 32 MWU
+        handler(irq_dispatch), // 33 PWM1
+        handler(irq_dispatch), // 34 PWM2
+        handler(irq_dispatch), // 35 SPIM2_SPIS2
+        handler(irq_dispatch), // 36 RTC2
+        handler(irq_dispatch), // 37 I2S
+        handler(irq_dispatch), // 38 FPU
+        handler(irq_dispatch), // 39 USBD
+        handler(irq_dispatch), // 40 UARTE1
+        handler(irq_dispatch), // 41 QSPI
+        handler(irq_dispatch), // 42 CRYPTOCELL
+        RESERVED,              // 43 Reserved
+        RESERVED,              // 44 Reserved
+        handler(irq_dispatch), // 45 PWM3
+        RESERVED,              // 46 Reserved
+        handler(irq_dispatch), // 47 SPIM3
     ],
 };
 
@@ -221,6 +223,39 @@ unsafe impl cortex_m::interrupt::InterruptNumber for Interrupt {
     }
 }
 
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// External interrupt dispatch
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+/// Handlers registered by the application, indexed by IRQ number. Lives in kernel
+/// RAM, so only privileged code can change it.
+static IRQ_TABLE: Global<[Option<extern "C" fn()>; NUM_IRQS]> = Global::new([None; NUM_IRQS]);
+
+/// Common entry for every external interrupt. Runs privileged (handler mode).
+extern "C" fn irq_dispatch() {
+    let ipsr: u32;
+    unsafe { asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };
+    // Exception number 16 is IRQ 0.
+    let irq = (ipsr & 0x1FF).wrapping_sub(16) as usize;
+    match unsafe { (*IRQ_TABLE.as_ptr()).get(irq).copied().flatten() } {
+        Some(h) => h(),
+        None => default_handler(),
+    }
+}
+
+/// Route `irq` to `handler`. Call from `user_main` (privileged, before the
+/// scheduler starts), before enabling the interrupt in the NVIC. The handler
+/// runs privileged, but its code must live in user flash (the `app` crate).
+pub fn irq_attach(irq: Interrupt, handler: extern "C" fn()) {
+    assert!(
+        crate::is_user_text(handler as usize),
+        "IRQ handler is not in user text"
+    );
+    cortex_m::interrupt::free(|_| unsafe {
+        (*IRQ_TABLE.as_ptr())[irq as usize] = Some(handler);
+    });
+}
+
 pub static CORE_PERIPHERALS: Global<Option<Peripherals>> = Global::new(None);
 
 pub fn core_periph() -> &'static mut Peripherals {
@@ -296,10 +331,4 @@ pub extern "C" fn memmanage_handler() {
 unsafe extern "C" {
     safe fn PendSVHandler();
     safe fn SvcHandler();
-}
-
-#[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
-    dprintln!("Panic: {}", info);
-    loop {}
 }

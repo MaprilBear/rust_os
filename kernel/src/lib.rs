@@ -3,26 +3,28 @@
 // TODO: Implement workqueues
 // TODO: Move kernel memory to a specific page
 #![no_std]
-#![no_main]
+
+//! The privileged kernel. link.ld places this crate (and only this crate) in the
+//! KFLASH/KRAM regions, which the MPU makes privileged-only. Unprivileged threads
+//! must never call into it directly: they use `userlib` (syscalls) instead.
+//!
+//! Boot is `reset::ResetHandler`, which calls the application's
+//! `#[no_mangle] extern "C" fn user_main()` to register threads and drivers.
 
 #[macro_use]
-mod debugcon;
+pub mod debugcon;
 
-mod fifo;
-mod global;
-mod mmio;
-mod ppi;
 mod reset;
 mod scheduler;
-mod semaphore;
+pub mod semaphore;
 mod simple_list;
 mod syscall;
-mod threads;
-mod timer;
-mod uarte;
 mod vectors;
 
 extern crate alloc;
+
+pub use semaphore::give_from_isr;
+pub use vectors::{core_periph, irq_attach, Interrupt};
 
 use bitfields::bitflag;
 use core::alloc::{GlobalAlloc, Layout};
@@ -45,6 +47,18 @@ static USER_HEAP: Heap = Heap::empty();
 unsafe extern "C" {
     static _suser_heap: u8;
     static _euser_heap: u8;
+    // Bounds of the `.user_text` output section (link.ld).
+    static _suser_text: u8;
+    static _euser_text: u8;
+}
+
+/// True if `addr` (a function address; the Thumb bit is ignored) lies in user
+/// flash, i.e. code that unprivileged threads may execute.
+fn is_user_text(addr: usize) -> bool {
+    let addr = addr & !1;
+    let start = addr_of!(_suser_text) as usize;
+    let end = addr_of!(_euser_text) as usize;
+    addr >= start && addr < end
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,8 +117,14 @@ pub extern "C" fn SystickHandler() {
 // -16 | R11 ---   <---- current stack pointer
 // |
 // V 0x0000_0000
-type ThreadEntry = extern "C" fn() -> !;
+pub type ThreadEntry = extern "C" fn() -> !;
 fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
+    // Threads run unprivileged, so their code must be in user flash.
+    assert!(
+        is_user_text(thread_entry as usize),
+        "thread entry is not in user text"
+    );
+
     // Keep the top of the stack 8-byte aligned (AAPCS).
     let stack_words = (stack_words & !1).max(32);
     let layout = Layout::from_size_align(stack_words * 4, 8).unwrap();
@@ -151,8 +171,6 @@ enum Nrf52840InterruptPriority {
     Seven = 0xE0,
 }
 
-use crate::vectors::core_periph;
-
 fn start_systick() {
     unsafe {
         let core_periph = core_periph();
@@ -181,14 +199,6 @@ fn start_systick() {
     }
 }
 
-// Runs unprivileged.
-#[link_section = ".user_text"]
-extern "C" fn idle_thread() -> ! {
-    loop {
-        unsafe { asm!("wfe") };
-    }
-}
-
 fn os_init() {
     unsafe {
         embedded_alloc::init!(HEAP, 16000);
@@ -197,10 +207,12 @@ fn os_init() {
         let end = addr_of!(_euser_heap) as usize;
         USER_HEAP.init(start, end - start);
     }
-    os_add_thread(idle_thread, 1024, 7);
+    os_add_thread(userlib::idle_thread, 1024, 7);
 }
 
-fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
+/// Register a thread. Call only from `user_main` (privileged, before the
+/// scheduler starts). `priority` 0 is highest, 7 is the idle thread's.
+pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
     create_tcb(thread_entry, stack_size, priority);
 }
 

@@ -3,9 +3,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 use crate::fifo::{Fifo, LockFreePolicy};
-use crate::global::Global;
 use crate::mmio::{Count16, Count16Builder, Event, Mmio, Reg, Ro, Rw, Task};
-use crate::semaphore;
+use kernel::semaphore;
+use userlib::Global;
 
 #[bitfield(u32)]
 struct UartShorts {
@@ -232,10 +232,8 @@ pub struct Uarte {
     regs: Mmio<UarteRegs>,
 }
 
-#[link_section = ".user_data"]
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
 #[allow(unused)]
-#[link_section = ".user_data"]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 impl Uarte {
@@ -288,7 +286,7 @@ impl Uarte {
             // the bit(s) being disabled.
             regs.intenclr
                 .write(UartInterruptBuilder::new().with_endtx(true).build());
-            self.tx_semaphore.give();
+            kernel::give_from_isr(&self.tx_semaphore);
         }
 
         // Swap the receive buffers as the other fills up and push the received byte into the FIFO.
@@ -322,8 +320,8 @@ use bitfields::{bitfield, bitflag};
 use cortex_m::interrupt::InterruptNumber;
 use saturating_cast::SaturatingCast;
 
-use crate::semaphore::Semaphore;
-use crate::vectors::{core_periph, Interrupt};
+use kernel::{core_periph, Interrupt};
+use userlib::Semaphore;
 
 /// # Safety
 /// This function should not be called post-OS initialization.

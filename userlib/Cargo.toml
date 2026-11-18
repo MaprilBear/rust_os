@@ -1,0 +1,9 @@
+[package]
+name = "userlib"
+version = "0.1.0"
+edition = "2021"
+
+# Code that unprivileged threads may call: syscall wrappers, the semaphore
+# handle and small helpers. Linked into user flash. No dependencies on purpose.
+
+[dependencies]

@@ -3,6 +3,17 @@
 version = 4
 
 [[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "bitfields",
+ "cortex-m",
+ "kernel",
+ "saturating_cast",
+ "userlib",
+]
+
+[[package]]
 name = "bare-metal"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -172,7 +183,7 @@ dependencies = [
  "cortex-m",
  "critical-section",
  "embedded-alloc",
- "saturating_cast",
+ "userlib",
 ]
 
 [[package]]
@@ -360,6 +371,10 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "userlib"
+version = "0.1.0"
 
 [[package]]
 name = "vcell"

@@ -1,0 +1,23 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust_os"
+path = "src/main.rs"
+test = false
+bench = false
+
+[features]
+# Quick-and-dirty console for Renode (kernel/src/debugcon.rs). On by default;
+# build for real hardware with `cargo build --no-default-features`.
+default = ["debugcon"]
+debugcon = ["kernel/debugcon"]
+
+[dependencies]
+kernel = { path = "../kernel", default-features = false }
+userlib = { path = "../userlib" }
+bitfields = "3.2.1"
+cortex-m = "0.7.10"
+saturating_cast = "0.1.0"

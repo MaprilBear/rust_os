@@ -6,7 +6,7 @@ Test Teardown     Test Teardown
 Resource          ${RENODEKEYWORDS}
 
 *** Variables ***
-${ELF}            ${CURDIR}/../target/thumbv7em-none-eabihf/debug/kernel
+${ELF}            ${CURDIR}/../target/thumbv7em-none-eabihf/debug/rust_os
 
 *** Keywords ***
 Create Machine

@@ -1,19 +1,31 @@
 /* Sized to match the nRF52840 (1 MiB flash at 0x0, 256 KiB RAM at 0x2000_0000).
- * QEMU's mps2-an386 maps 4 MiB at both base addresses, so this layout also runs
- * there; the sizes are just a smaller window of what QEMU provides.
  *
- * Kernel/user split for the MPU (see mpu_init):
- *   KFLASH / KRAM  - privileged-only regions (reachable only from handler mode,
- *                    once thread mode is dropped to unprivileged).
+ * Kernel / user split (see mpu_init):
+ *   KFLASH / KRAM  - privileged-only regions.
  *   UFLASH / URAM  - accessible to unprivileged thread code.
+ *
+ * PLACEMENT RULE (new): the *kernel crate* is placed in KFLASH/KRAM by input-file
+ * name; EVERYTHING ELSE (app, drivers, userlib, core, alloc, compiler_builtins,
+ * third-party crates) falls through to UFLASH/URAM.
+ *
+ *   rustc puts each crate's code in  libNAME-<hash>.rlib(NAME-<hash>.NAME.<hash>-cgu.N.rcgu.o)
+ *   and passes the rlib to the linker, so the pattern  *libkernel-*.rlib:*  selects
+ *   exactly the kernel crate's object code ("archive:member" syntax; the trailing
+ *   hyphen stops it matching a crate called kernel_something).
+ *
+ *   !! Needs crate boundaries to survive until link time: build with `lto = "off"`.
+ *   !! With fat/thin LTO the whole program is one object, nothing matches, and
+ *   !! the kernel silently lands in UFLASH/URAM.  tools/check_placement.py guards this.
+ *
+ * Kernel objects that must live in KRAM but are *declared by user code* (e.g.
+ * semaphore!()) opt in by section name instead: #[link_section = ".ksem"].
+ *
+ * Section-order matters: the first matching statement wins, so every kernel
+ * statement below must stay ABOVE the user catch-alls.
  *
  * MPU constraints: each region's size is a power of two and its base is aligned
  * to that size. KFLASH is 64 KiB at 0x0 and KRAM is 32 KiB at 0x2000_0000, which
  * match MPU regions 1 and 3. Keep them in sync with mpu_init.
- *
- * Everything lands in the kernel regions by default. User code and data opt in
- * with #[link_section = ".user_text"], ".user_rodata", ".user_data" or
- * ".user_bss".
  */
 MEMORY
 {
@@ -36,25 +48,30 @@ SECTIONS
 
     .text :
     {
-        *(.text .text.*)
+        *libkernel-*.rlib:*(.text .text.*)
+        /* Kernel-private dependencies (never called from threads) may be added
+         * here if you want *all* privileged code in KFLASH, e.g.
+         *   *libembedded_alloc-*.rlib:*(.text .text.*)
+         * Do NOT add core/alloc/compiler_builtins: user code calls those. */
     } > KFLASH
 
     .rodata :
     {
-        *(.rodata .rodata.*)
+        *libkernel-*.rlib:*(.rodata .rodata.*)
         . = ALIGN(4);
     } > KFLASH
 
     .data : ALIGN(4)
     {
         _sdata = .;
-        /* Kernel semaphore objects (see semaphore!). They sit first so the
+        /* Kernel semaphore objects (see semaphore!). Matched by *section name*
+         * because the macro expands in the app crate. They sit first so the
          * kernel can validate a user-supplied handle as "inside [_sksem, _eksem)
-         * and a multiple of the object size". Initialised by the normal .data copy. */
+         * and a multiple of the object size". */
         _sksem = .;
         *(.ksem .ksem.*)
         _eksem = .;
-        *(.data .data.*)
+        *libkernel-*.rlib:*(.data .data.*)
         . = ALIGN(4);
         _edata = .;
     } > KRAM AT > KFLASH
@@ -63,8 +80,7 @@ SECTIONS
     .bss (NOLOAD) : ALIGN(4)
     {
         _sbss = .;
-        *(.bss .bss.*)
-        *(COMMON)
+        *libkernel-*.rlib:*(.bss .bss.* COMMON)
         . = ALIGN(4);
         _ebss = .;
     } > KRAM
@@ -73,25 +89,27 @@ SECTIONS
     _estack = ORIGIN(KRAM) + LENGTH(KRAM);
 
     /* ---------------- User (unprivileged) ---------------- */
+    /* Catch-alls: anything the statements above did not claim. The old explicit
+     * #[link_section = ".user_*"] attributes still work but are no longer needed. */
 
     .user_text : ALIGN(4)
     {
         _suser_text = .;
-        *(.user_text .user_text.*)
+        *(.text .text.* .user_text .user_text.*)
         . = ALIGN(4);
         _euser_text = .;
     } > UFLASH
 
     .user_rodata : ALIGN(4)
     {
-        *(.user_rodata .user_rodata.*)
+        *(.rodata .rodata.* .user_rodata .user_rodata.*)
         . = ALIGN(4);
     } > UFLASH
 
     .user_data : ALIGN(4)
     {
         _sudata = .;
-        *(.user_data .user_data.*)
+        *(.data .data.* .user_data .user_data.*)
         . = ALIGN(4);
         _eudata = .;
     } > URAM AT > UFLASH
@@ -100,7 +118,7 @@ SECTIONS
     .user_bss (NOLOAD) : ALIGN(4)
     {
         _subss = .;
-        *(.user_bss .user_bss.*)
+        *(.bss .bss.* COMMON .user_bss .user_bss.*)
         . = ALIGN(4);
         _eubss = .;
     } > URAM

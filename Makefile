@@ -1,8 +1,9 @@
 IMAGE      ?= nrf52840-os-dev
 TARGET     := thumbv7em-none-eabihf
 PROFILE    ?= debug
-BIN        := kernel
+BIN        := rust_os
 ELF        := target/$(TARGET)/$(PROFILE)/$(BIN)
+MAP        := $(ELF).map
 GDB_PORT   ?= 3333
 
 # HOME must be writable: Renode keeps its config and temp files there.
@@ -18,11 +19,14 @@ DOCKER_RUN := docker run --rm -it \
 image:
 	docker build -t $(IMAGE) .
 
+# Every build is followed by the kernel/user placement check (tools/check_placement.py):
+# it fails the build if the kernel crate did not land in KFLASH/KRAM (e.g. LTO got
+# turned on) or if anything else landed there.
 build:
-	$(DOCKER_RUN) $(IMAGE) cargo build
+	$(DOCKER_RUN) $(IMAGE) sh -c 'cargo build && python3 tools/check_placement.py $(MAP)'
 
 release:
-	$(DOCKER_RUN) $(IMAGE) cargo build --release
+	$(DOCKER_RUN) $(IMAGE) sh -c 'cargo build --release && python3 tools/check_placement.py target/$(TARGET)/release/$(BIN).map'
 
 # Boot the kernel on a simulated nRF52840 in Renode. Type `quit` to exit.
 run: build
@@ -56,13 +60,13 @@ shell:
 	$(DOCKER_RUN) $(IMAGE) bash
 
 clippy:
-	$(DOCKER_RUN) $(IMAGE) cargo clippy
+	$(DOCKER_RUN) $(IMAGE) cargo clippy --workspace
 
 fmt:
-	$(DOCKER_RUN) $(IMAGE) cargo fmt
+	$(DOCKER_RUN) $(IMAGE) cargo fmt --all
 
 size:
-	$(DOCKER_RUN) $(IMAGE) cargo size -- -A
+	$(DOCKER_RUN) $(IMAGE) cargo size --bin $(BIN) -- -A
 
 clean:
 	$(DOCKER_RUN) $(IMAGE) cargo clean

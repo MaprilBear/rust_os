@@ -1,11 +1,9 @@
 use bitfields::bitfield;
 
-use crate::{
-    mmio::{Count4, Event, Mmio, Reg, Rw, Task},
-    semaphore::Semaphore,
-};
+use kernel::semaphore;
+use userlib::Semaphore;
 
-use crate::semaphore;
+use crate::mmio::{Count4, Event, Mmio, Reg, Rw, Task};
 
 #[bitfield(u32)]
 pub struct TimerShort {

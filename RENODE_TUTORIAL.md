@@ -128,7 +128,7 @@ Terminal 2:
 make gdb          # gdb-multiarch inside the container, connects to localhost:3334
 ```
 
-Or use your own GDB: `arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/kernel`
+Or use your own GDB: `arm-none-eabi-gdb target/thumbv7em-none-eabihf/debug/rust_os`
 then `target remote :3334`.
 
 Typical session:

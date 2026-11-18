@@ -3,14 +3,15 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use crate::{
-    os_add_thread, os_init, os_start,
-    threads::{user_thread1, user_thread2},
-    uarte::uart_init,
-    vectors::CORE_PERIPHERALS,
-};
+use crate::{os_init, os_start, vectors::CORE_PERIPHERALS};
 
 unsafe extern "C" {
+    /// Provided by the application (`#[no_mangle] pub extern "C" fn user_main()`).
+    /// Runs once, privileged, on MSP, after the kernel is initialised and before
+    /// the scheduler starts. It registers threads (`os_add_thread`), interrupt
+    /// handlers (`irq_attach`) and initialises drivers.
+    fn user_main();
+
     // Kernel sections (KFLASH -> KRAM)
     static _sidata: u32;
     static mut _sdata: u32;
@@ -141,15 +142,15 @@ unsafe fn disable_region(n: u32) {
     MPU_RASR.write_volatile(0);
 }
 
-/// false: kernel *code* in flash is readable/executable by unprivileged threads.
-///   It is still immutable, and it runs with the caller's privilege, so anything
-///   that touches kernel RAM or the System Control Space still faults. This
-///   keeps ordinary compiler-emitted calls (memset, slice indexing, core::str in
-///   debug builds) from faulting.
-/// true: kernel flash is privileged-only. Threads then must not call into
-///   anything outside `.user_*` (e.g. build them as a separate crate that the
-///   linker script places by file name).
-const STRICT_KERNEL_FLASH: bool = false;
+/// true: kernel flash (KFLASH, which holds only this crate, see link.ld) is
+///   privileged-only. Unprivileged threads may only execute user flash: the
+///   `userlib`/`app` crates and shared dependencies (`core`, `alloc`,
+///   `compiler_builtins`, ...), which the linker places there. A thread that
+///   calls into the kernel crate takes a MemManage fault; the stacked PC/MMFAR
+///   show where.
+/// false: kernel code is readable/executable by threads too (still immutable,
+///   and it runs with the caller's privilege). Only useful for debugging.
+const STRICT_KERNEL_FLASH: bool = true;
 
 /// Keep the RAM/flash windows in sync with link.ld (the linker script ASSERTs
 /// on KFLASH and KRAM).
@@ -175,7 +176,8 @@ pub unsafe fn mpu_init() {
 /// Boot runs privileged on MSP. Order matters:
 ///   1. initialise RAM (MPU still off, so it can write everything)
 ///   2. enable the MPU
-///   3. create threads (kernel allocates their stacks from the user heap)
+///   3. `os_init`, then the application's `user_main` creates threads (the kernel
+///      allocates their stacks from the user heap) and initialises drivers
 ///   4. `os_start`, which traps into SVC; handler mode sets CONTROL.nPRIV and
 ///      PendSV exception-returns into the first thread. After that, thread mode
 ///      is unprivileged forever and this function is never run again.
@@ -188,8 +190,7 @@ pub extern "C" fn ResetHandler() -> ! {
         *CORE_PERIPHERALS.as_ptr() = Some(cortex_m::peripheral::Peripherals::take().unwrap())
     };
     os_init();
-    os_add_thread(user_thread1, 1024, 0);
-    os_add_thread(user_thread2, 1024, 1);
-    uart_init();
+    unsafe { user_main() };
+    dprintln!("kernel booted");
     os_start();
 }

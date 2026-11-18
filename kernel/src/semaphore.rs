@@ -3,15 +3,20 @@
 //!   * `KSemaphore` - the kernel object (count + wait queue). Always a `static`
 //!     placed in the `.ksem` section, which link.ld puts in kernel RAM, so
 //!     unprivileged code cannot read or corrupt the wait queue.
-//!   * `Semaphore` - the user handle: just the address of its `KSemaphore`.
-//!     It is `const`-constructible, so it can be a field of any `static`.
+//!   * `userlib::Semaphore` - the user handle: just the address of its
+//!     `KSemaphore`. It is `const`-constructible, so it can be a field of any
+//!     `static`. Threads use it through syscalls; ISRs use `give_from_isr`.
 //!
 //! Create both at once with the `semaphore!(count)` macro. A `const fn` cannot
 //! do this on its own: it cannot emit a second static into a different link
 //! section. The macro can, and each expansion gets its own static.
 //!
-//!     static TX_DONE: Semaphore = semaphore!(0);
+//!     static TX_DONE: userlib::Semaphore = kernel::semaphore!(0);
 //!     pub static UARTE0: Uarte = Uarte::new(BASE, semaphore!(1), semaphore!(0));
+//!
+//! The macro expands in the *calling* crate, so `KOBJ` is not part of the kernel
+//! crate's object code. link.ld still puts it in kernel RAM because it matches
+//! `.ksem` by section name.
 //!
 //! Do not call `semaphore!` inside a `fn` that is run more than once (including
 //! a `const fn` constructor used for several instances): every call would share
@@ -23,13 +28,11 @@
 //! `svc` with nothing to retry.
 
 use alloc::collections::VecDeque;
-use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
 use core::ptr::addr_of;
 
 use crate::scheduler::{scheduler, Scheduler, CURR_TCB};
-use crate::syscall::{sys_sem_give, sys_sem_take};
 use crate::{os_yield, ThreadId};
 
 unsafe extern "C" {
@@ -74,8 +77,13 @@ macro_rules! semaphore {
     ($count:expr) => {{
         #[link_section = ".ksem"]
         static KOBJ: $crate::semaphore::KSemaphore = $crate::semaphore::KSemaphore::new($count);
-        $crate::semaphore::Semaphore::__from_kernel_object(&KOBJ)
+        $crate::semaphore::__handle_for(&KOBJ)
     }};
+}
+
+#[doc(hidden)]
+pub const fn __handle_for(k: &'static KSemaphore) -> userlib::Semaphore {
+    userlib::Semaphore::from_kernel_object(k as *const KSemaphore as *const ())
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -141,70 +149,16 @@ pub fn ksem_give(handle: u32) -> Option<bool> {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// User handle
+// ISR side
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// IPSR is readable from unprivileged code. Nonzero means we are in an exception handler.
-#[inline(always)]
-fn in_handler_mode() -> bool {
-    let ipsr: u32;
-    unsafe {
-        asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags));
-    }
-    ipsr & 0x1FF != 0
-}
-
-pub struct Semaphore {
-    // A raw pointer, never dereferenced here: it points into kernel RAM, which
-    // unprivileged code cannot read. (A `&KSemaphore` would let the compiler
-    // insert speculative loads.) It is only passed to the kernel as a handle.
-    kobj: *const KSemaphore,
-}
-
-// The handle is just an address; all shared state is in the kernel and guarded there.
-unsafe impl Sync for Semaphore {}
-unsafe impl Send for Semaphore {}
-
-#[allow(dead_code)]
-impl Semaphore {
-    #[doc(hidden)]
-    pub const fn __from_kernel_object(kobj: &'static KSemaphore) -> Self {
-        Self {
-            kobj: kobj as *const KSemaphore,
-        }
-    }
-
-    fn handle(&self) -> u32 {
-        self.kobj as usize as u32
-    }
-
-    /// Blocks the calling thread if the count is exhausted. Thread context only.
-    pub fn take(&self) {
-        debug_assert!(!in_handler_mode(), "Semaphore::take from an ISR");
-        assert!(sys_sem_take(self.handle()) == 0, "bad semaphore handle");
-    }
-
-    /// Callable from threads and from ISRs. A handler cannot issue `svc` at the
-    /// same priority as SVC (that escalates to HardFault), so ISRs call the
-    /// kernel directly.
-    pub fn give(&self) {
-        if in_handler_mode() {
-            match ksem_give(self.handle()) {
-                Some(true) => os_yield(),
-                Some(false) => {}
-                None => panic!("bad semaphore handle"),
-            }
-        } else {
-            assert!(sys_sem_give(self.handle()) == 0, "bad semaphore handle");
-        }
-    }
-
-    pub fn with<F>(&self, f: F)
-    where
-        F: FnOnce(),
-    {
-        self.take();
-        f();
-        self.give();
+/// `Semaphore::give` for interrupt handlers. A handler cannot issue `svc` at the
+/// same priority as SVC (that escalates to HardFault), so ISRs, which run
+/// privileged, call the kernel directly.
+pub fn give_from_isr(sem: &userlib::Semaphore) {
+    match ksem_give(sem.handle()) {
+        Some(true) => os_yield(),
+        Some(false) => {}
+        None => panic!("bad semaphore handle"),
     }
 }

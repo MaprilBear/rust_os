@@ -1,69 +1,19 @@
-//! System calls (SVC).
+//! System calls (SVC), kernel side.
 //!
 //! Thread mode runs unprivileged, so it cannot write ICSR (to pend PendSV), touch
 //! the scheduler or KRAM, or poke the System Control Space. It reaches the kernel
 //! only through `svc #n`; the handler runs in handler mode (always privileged).
 //!
 //! Calling convention: r0, r1 are the arguments; a return value goes back in r0.
+//!
+//! The user-side wrappers (`sys_*`) and the `Syscall` numbers live in `userlib`,
+//! so threads never execute code from this crate.
 
-use core::arch::{asm, global_asm};
+use core::arch::global_asm;
 use core::ptr::addr_of;
 use core::sync::atomic::AtomicBool;
 
-#[repr(u8)]
-enum Syscall {
-    Start = 0, // kernel only: drop privilege and run the first thread
-    Yield = 1,
-    Sleep = 2,   // r0 = milliseconds
-    SemTake = 3, // r0 = semaphore handle -> r0 = 0 ok / 1 error; may block
-    SemGive = 4, // r0 = semaphore handle -> r0 = 0 ok / 1 error
-    Invalid = u8::MAX,
-}
-
-impl TryFrom<u8> for Syscall {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::Start),
-            1 => Ok(Self::Yield),
-            2 => Ok(Self::Sleep),
-            3 => Ok(Self::SemTake),
-            4 => Ok(Self::SemGive),
-            _ => Err(()),
-        }
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// User-side wrappers. `inline(always)` so they are part of the caller's own code.
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[inline(always)]
-pub fn sys_yield() {
-    unsafe { asm!("svc #{0}", const Syscall::Yield as u32) };
-}
-
-#[inline(always)]
-pub fn sys_sleep(ms: u32) {
-    unsafe { asm!("svc #{0}", const Syscall::Sleep as u32, in("r0") ms) };
-}
-
-pub fn sys_sem_take(handle: u32) -> u32 {
-    let r0: u32;
-    unsafe { asm!("svc #{0}", const Syscall::SemTake as u32, inout("r0") handle => r0) };
-    r0
-}
-
-pub fn sys_sem_give(handle: u32) -> u32 {
-    let r0: u32;
-    unsafe { asm!("svc #{0}", const Syscall::SemGive as u32, inout("r0") handle => r0) };
-    r0
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Kernel side
-///////////////////////////////////////////////////////////////////////////////////////////////////
+use userlib::Syscall;
 
 // SVCall entry. Picks the stack the caller was using (EXC_RETURN bit 2), then
 // branches (not calls) to the Rust dispatcher with r0 = stacked frame and
@@ -122,6 +72,15 @@ mod syscall_impl {
         start_systick,
         syscall::STARTED,
     };
+
+    /// The calling thread cannot continue (e.g. it panicked). There is no thread
+    /// teardown yet, so halt like the MemManage handler does.
+    pub(super) fn fault() -> ! {
+        let id = unsafe { scheduler().current_thread() };
+        dprintln!("thread {} faulted", id);
+        #[allow(clippy::empty_loop)]
+        loop {}
+    }
 
     pub(super) fn start(exc_return: u32) -> u32 {
         // Only the boot code may do this: it must come from privileged
@@ -185,6 +144,7 @@ extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
         Syscall::Sleep => syscall_impl::sleep(arg0),
         Syscall::SemTake => syscall_impl::sem_take(arg0),
         Syscall::SemGive => syscall_impl::sem_give(arg0),
+        Syscall::Fault => syscall_impl::fault(),
         Syscall::Invalid => {
             dprintln!("Invalid SVC number {num}");
             0
