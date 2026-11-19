@@ -1,38 +1,27 @@
-//! System calls (SVC), kernel side.
+//! System calls, kernel side.
 //!
-//! Thread mode runs unprivileged, so it cannot write ICSR (to pend PendSV), touch
-//! the scheduler or KRAM, or poke the System Control Space. It reaches the kernel
-//! only through `svc #n`; the handler runs in handler mode (always privileged).
-//!
-//! Calling convention: r0, r1 are the arguments; a return value goes back in r0.
+//! Threads run unprivileged and reach the kernel only through a syscall: one
+//! argument in, one return value out (r0 on the target). The arch layer
+//! decodes the trap (`arch/armv7m/svc.rs`) and calls [`dispatch`].
 //!
 //! The user-side wrappers (`sys_*`) and the `Syscall` numbers live in `userlib`,
 //! so threads never execute code from this crate.
 
-use core::arch::global_asm;
 use core::ptr::addr_of;
 use core::sync::atomic::AtomicBool;
 
 use userlib::Syscall;
 
-// SVCall entry. Picks the stack the caller was using (EXC_RETURN bit 2), then
-// branches (not calls) to the Rust dispatcher with r0 = stacked frame and
-// r1 = EXC_RETURN. LR is untouched, so the dispatcher's own return performs the
-// exception return.
-global_asm!(
-    ".global SvcHandler",
-    ".type SvcHandler, %function",
-    ".thumb_func",
-    "SvcHandler:",
-    "tst lr, #4",
-    "ite eq",
-    "mrseq r0, msp",
-    "mrsne r0, psp",
-    "mov r1, lr",
-    "b svc_dispatch",
-);
-
 static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Who made a syscall.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Caller {
+    /// The privileged boot code, before the scheduler runs.
+    Boot,
+    /// A thread.
+    Thread,
+}
 
 unsafe extern "C" {
     // Defined in link.ld.
@@ -70,7 +59,7 @@ mod syscall_impl {
         scheduler::{scheduler, Scheduler},
         semaphore::{ksem_give, ksem_take, TakeResult},
         start_systick,
-        syscall::STARTED,
+        syscall::{Caller, STARTED},
     };
 
     /// The calling thread cannot continue (e.g. it panicked). There is no thread
@@ -84,10 +73,9 @@ mod syscall_impl {
         loop {}
     }
 
-    pub(super) fn start(exc_return: u32) -> usize {
-        // Only the boot code may do this: it must come from privileged
-        // thread mode on MSP (EXC_RETURN low nibble 0x9), and only once.
-        if exc_return & 0xF != 0x9 || STARTED.swap(true, Ordering::SeqCst) {
+    pub(super) fn start(caller: Caller) -> usize {
+        // Only the boot code may do this, and only once.
+        if caller != Caller::Boot || STARTED.swap(true, Ordering::SeqCst) {
             return 1;
         }
         start_systick();
@@ -135,16 +123,13 @@ mod syscall_impl {
     }
 }
 
-#[no_mangle]
-extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
-    // Stacked frame: r0 r1 r2 r3 r12 LR PC xPSR. The SVC number is the byte before the stacked PC.
-    let pc = unsafe { frame.add(6).read() };
-    let arg0 = unsafe { frame.read() } as usize;
-    let num = unsafe { ((pc - 2) as *const u8).read() };
+/// Run syscall number `num` with argument `arg0` for `caller` (the running
+/// thread, or the boot code). Returns the caller's return value.
+pub(crate) fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
     let syscall_num = Syscall::try_from(num).unwrap_or(Syscall::Invalid);
 
-    let r0 = match syscall_num {
-        Syscall::Start => syscall_impl::start(exc_return),
+    match syscall_num {
+        Syscall::Start => syscall_impl::start(caller),
         Syscall::Yield => syscall_impl::r#yield(),
         Syscall::Sleep => syscall_impl::sleep(arg0 as u32),
         Syscall::SemTake => syscall_impl::sem_take(arg0),
@@ -154,7 +139,5 @@ extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
             dprintln!("Invalid SVC number {num}");
             0
         }
-    };
-
-    unsafe { frame.write(r0 as u32) };
+    }
 }

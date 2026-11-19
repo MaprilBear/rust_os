@@ -1,6 +1,7 @@
 //! Cortex-M4F (nRF52840) backend. See `arch/mod.rs`.
 
 mod reset;
+mod svc;
 mod vectors;
 
 use cortex_m::interrupt::InterruptNumber;
