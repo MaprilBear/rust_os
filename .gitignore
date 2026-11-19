@@ -1,4 +1,6 @@
 target/
+# Robot reports, if renode-test is run by hand from the repo root
+# (`cargo xtask test-renode` keeps them in target/renode-results/).
 log.html
 report.html
 robot_output.xml

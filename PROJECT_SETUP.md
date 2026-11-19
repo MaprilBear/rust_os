@@ -820,15 +820,16 @@ image for you and its terminal is the shell.)
 
 | Command | What it does |
 |---|---|
-| `make build` | `cargo build` (debug). |
-| `make release` | `cargo build --release`. |
+| `make build` | `cargo xtask build`: `cargo build` (debug), then the kernel/user placement check. |
+| `make release` | `cargo xtask build --release`. |
 | `make run` | Build, then boot the kernel on the simulated nRF52840 in Renode. You get a `(nrf52840)` prompt. Type `quit` to exit. |
 | `make debug` | Build, then start Renode with a GDB server on port 3334. |
 | `make gdb` | In a second terminal: attach `gdb-multiarch` to that server. |
-| `make test` | Run `renode/test.robot` via `renode-test`. |
+| `make test` | `cargo xtask test`: host unit tests, then the Renode suites. |
+| `make test-host` / `make test-renode` | Only the host tests / only the Renode suites (`cargo xtask test-host` / `test-renode`). |
 | `make qemu` | Run the same ELF on QEMU's generic Cortex-M4 board (no nRF peripherals). Exit with `Ctrl-A` then `X`. |
 | `make qemu-debug` | QEMU halted with a GDB server on port 1234. |
-| `make clippy` / `make fmt` | Lint / format the code. |
+| `make clippy` / `make fmt` | Lint / format the code (`cargo xtask clippy` / `fmt`). |
 | `make size` | Show section sizes of the built ELF. |
 | `make clean` | Remove build output and test reports. |
 
@@ -840,8 +841,8 @@ Enable the repository's pre-commit hook once per clone:
 git config core.hooksPath .githooks
 ```
 
-The hook runs `cargo fmt --all -- --check` and blocks commits if formatting is
-needed. Run `cargo fmt --all` to apply formatting, then stage the changes.
+The hook runs `cargo xtask fmt --check` and blocks commits if formatting is
+needed. Run `cargo xtask fmt` to apply formatting, then stage the changes.
 
 Handy Renode Monitor commands at the `(nrf52840)` prompt:
 
