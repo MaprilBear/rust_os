@@ -42,23 +42,23 @@ unsafe extern "C" {
     static _uram_size: u8;
 }
 
-fn in_range(ptr: u32, len: u32, base: u32, size: u32) -> bool {
+fn in_range(ptr: usize, len: usize, base: usize, size: usize) -> bool {
     ptr >= base && len <= size && ptr - base <= size - len
 }
 
 /// The kernel must not trust pointers from user code: the MPU does not stop a
 /// handler from dereferencing them.
 #[allow(dead_code)]
-fn user_can_read(ptr: u32, len: u32) -> bool {
-    let flash_base = addr_of!(_flash_base) as u32;
-    let flash_size = addr_of!(_flash_size) as u32;
+fn user_can_read(ptr: usize, len: usize) -> bool {
+    let flash_base = addr_of!(_flash_base) as usize;
+    let flash_size = addr_of!(_flash_size) as usize;
     in_range(ptr, len, flash_base, flash_size) || user_can_write(ptr, len)
 }
 
 #[allow(dead_code)]
-fn user_can_write(ptr: u32, len: u32) -> bool {
-    let uram_base = addr_of!(_uram_base) as u32;
-    let uram_size = addr_of!(_uram_size) as u32;
+fn user_can_write(ptr: usize, len: usize) -> bool {
+    let uram_base = addr_of!(_uram_base) as usize;
+    let uram_size = addr_of!(_uram_size) as usize;
     in_range(ptr, len, uram_base, uram_size)
 }
 
@@ -84,7 +84,7 @@ mod syscall_impl {
         loop {}
     }
 
-    pub(super) fn start(exc_return: u32) -> u32 {
+    pub(super) fn start(exc_return: u32) -> usize {
         // Only the boot code may do this: it must come from privileged
         // thread mode on MSP (EXC_RETURN low nibble 0x9), and only once.
         if exc_return & 0xF != 0x9 || STARTED.swap(true, Ordering::SeqCst) {
@@ -95,12 +95,12 @@ mod syscall_impl {
         0
     }
 
-    pub(super) fn r#yield() -> u32 {
+    pub(super) fn r#yield() -> usize {
         os_yield();
         0
     }
 
-    pub(super) fn sleep(ms: u32) -> u32 {
+    pub(super) fn sleep(ms: u32) -> usize {
         // Only a running thread can sleep (not boot code).
         if !unsafe { scheduler().sleep(ms) } {
             return 1;
@@ -109,7 +109,7 @@ mod syscall_impl {
         0
     }
 
-    pub(super) fn sem_take(handle: u32) -> u32 {
+    pub(super) fn sem_take(handle: usize) -> usize {
         match ksem_take(handle) {
             TakeResult::Acquired => 0,
             TakeResult::Error => 1,
@@ -122,7 +122,7 @@ mod syscall_impl {
         }
     }
 
-    pub(super) fn sem_give(handle: u32) -> u32 {
+    pub(super) fn sem_give(handle: usize) -> usize {
         match ksem_give(handle) {
             Some(woke) => {
                 if woke {
@@ -139,14 +139,14 @@ mod syscall_impl {
 extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
     // Stacked frame: r0 r1 r2 r3 r12 LR PC xPSR. The SVC number is the byte before the stacked PC.
     let pc = unsafe { frame.add(6).read() };
-    let arg0 = unsafe { frame.read() };
+    let arg0 = unsafe { frame.read() } as usize;
     let num = unsafe { ((pc - 2) as *const u8).read() };
     let syscall_num = Syscall::try_from(num).unwrap_or(Syscall::Invalid);
 
     let r0 = match syscall_num {
         Syscall::Start => syscall_impl::start(exc_return),
         Syscall::Yield => syscall_impl::r#yield(),
-        Syscall::Sleep => syscall_impl::sleep(arg0),
+        Syscall::Sleep => syscall_impl::sleep(arg0 as u32),
         Syscall::SemTake => syscall_impl::sem_take(arg0),
         Syscall::SemGive => syscall_impl::sem_give(arg0),
         Syscall::Fault => syscall_impl::fault(),
@@ -156,5 +156,5 @@ extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
         }
     };
 
-    unsafe { frame.write(r0) };
+    unsafe { frame.write(r0 as u32) };
 }

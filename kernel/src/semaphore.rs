@@ -92,9 +92,9 @@ pub const fn __handle_for(k: &'static KSemaphore) -> userlib::Semaphore {
 
 /// A handle is only valid if it is exactly the address of a `KSemaphore` in `.ksem`.
 /// User code controls the value, so this check is the whole security boundary.
-fn lookup(handle: u32) -> Option<&'static KSemaphore> {
-    let (start, end) = (addr_of!(_sksem) as u32, addr_of!(_eksem) as u32);
-    let size = size_of::<KSemaphore>() as u32;
+fn lookup(handle: usize) -> Option<&'static KSemaphore> {
+    let (start, end) = (addr_of!(_sksem) as usize, addr_of!(_eksem) as usize);
+    let size = size_of::<KSemaphore>();
     if handle >= start && handle < end && (handle - start).is_multiple_of(size) {
         Some(unsafe { &*(handle as *const KSemaphore) })
     } else {
@@ -110,7 +110,7 @@ pub enum TakeResult {
     Error,
 }
 
-pub fn ksem_take(handle: u32) -> TakeResult {
+pub fn ksem_take(handle: usize) -> TakeResult {
     critical_section::with(|_| {
         let Some(sem) = lookup(handle) else {
             return TakeResult::Error;
@@ -133,7 +133,7 @@ pub fn ksem_take(handle: u32) -> TakeResult {
 
 /// `None` for a bad handle; `Some(true)` if a waiter was woken (the caller must
 /// then pend PendSV so a higher-priority waiter can preempt).
-pub fn ksem_give(handle: u32) -> Option<bool> {
+pub fn ksem_give(handle: usize) -> Option<bool> {
     critical_section::with(|_| {
         let st = unsafe { &mut *lookup(handle)?.state.get() };
         st.count += 1;
