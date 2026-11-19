@@ -3,7 +3,6 @@ TARGET     := thumbv7em-none-eabihf
 PROFILE    ?= debug
 BIN        := rust_os
 ELF        := target/$(TARGET)/$(PROFILE)/$(BIN)
-MAP        := $(ELF).map
 GDB_PORT   ?= 3333
 
 # HOME must be writable: Renode keeps its config and temp files there.
@@ -19,14 +18,15 @@ DOCKER_RUN := docker run --rm -it \
 image:
 	docker build -t $(IMAGE) .
 
-# Every build is followed by the kernel/user placement check (tools/check_placement.py):
-# it fails the build if the kernel crate did not land in KFLASH/KRAM (e.g. LTO got
-# turned on) or if anything else landed there.
+# Builds go through `cargo xtask build`, which follows every build with the
+# kernel/user placement check (xtask/src/placement.rs): it fails the build if the
+# kernel crate did not land in KFLASH/KRAM (e.g. LTO got turned on) or if
+# anything else landed there.
 build:
-	$(DOCKER_RUN) $(IMAGE) sh -c 'cargo build && python3 tools/check_placement.py $(MAP)'
+	$(DOCKER_RUN) $(IMAGE) cargo xtask build
 
 release:
-	$(DOCKER_RUN) $(IMAGE) sh -c 'cargo build --release && python3 tools/check_placement.py target/$(TARGET)/release/$(BIN).map'
+	$(DOCKER_RUN) $(IMAGE) cargo xtask build --release
 
 # Boot the kernel on a simulated nRF52840 in Renode. Type `quit` to exit.
 run: build

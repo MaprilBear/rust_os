@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["kernel", "userlib", "drivers", "app"]
+# Host-only build tooling (`cargo xtask ...`, see .cargo/config.toml). Kept out
+# of the workspace so firmware builds (thumbv7em) never try to compile it.
+exclude = ["xtask"]
 default-members = ["app"]
 
 # Profiles only take effect at the workspace root.
@@ -8,7 +11,7 @@ default-members = ["app"]
 # LTO must stay off: link.ld places the kernel crate by its rlib name
 # (*libkernel-*.rlib:*). Fat/thin LTO merges every crate into one object, nothing
 # matches, and the whole kernel silently lands in user memory.
-# tools/check_placement.py (run by the Makefile) catches that.
+# `cargo xtask build` (placement check, xtask/src/placement.rs) catches that.
 [profile.dev]
 opt-level = 0
 debug = 2

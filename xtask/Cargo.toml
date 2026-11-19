@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Build/test automation for the firmware: `cargo xtask <command>`, run from the
+# repository root (the alias is in .cargo/config.toml). It runs on the host,
+# so it is not a member of the firmware workspace (see the root Cargo.toml);
+# the empty [workspace] table makes it its own workspace, so cargo never
+# attaches it to an enclosing one.
+
+[workspace]
+
+[dependencies]

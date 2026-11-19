@@ -13,8 +13,9 @@ fn main() {
     println!("cargo:rerun-if-changed={}", ld.display());
     println!("cargo:rustc-link-arg-bins=-T{}", ld.display());
 
-    // Linker map at <target>/<triple>/<profile>/rust_os.map, read by
-    // tools/check_placement.py. OUT_DIR is <profile>/build/<this package's dir>/...:
+    // Linker map at <target>/<triple>/<profile>/rust_os.map, read by the
+    // placement check (`cargo xtask build`). OUT_DIR is
+    // <profile>/build/<this package's dir>/...:
     //   classic layout:                  <profile>/build/app-<hash>/out
     //   cargo's newer build-dir layout:  <profile>/build/app/<hash>/out
     //     (seen with cargo 1.100)
