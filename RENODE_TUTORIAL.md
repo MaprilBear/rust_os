@@ -161,6 +161,7 @@ builds the firmware, then runs every `renode/*.robot` and
 `renode/tests/**/*.robot` suite (or only the `.robot` files you pass after
 `--`) with the freshly built ELF as `${ELF}`. Outputs (`log.html`,
 `report.html`, `robot_output.xml`) are written to `target/renode-results/`.
+See `docs/TESTING.md` for the overall test framework.
 
 Useful keywords: `Wait For Line On Uart`, `Wait For Prompt On Uart`,
 `Write Line To Uart`, `Execute Command`, `Start Emulation`, `Pause Emulation`,
