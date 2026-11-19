@@ -15,6 +15,7 @@
 pub mod debugcon;
 
 mod arch;
+mod irq;
 mod scheduler;
 pub mod semaphore;
 mod simple_list;
@@ -22,7 +23,7 @@ mod syscall;
 
 extern crate alloc;
 
-pub use arch::{irq_attach, irq_enable, irq_set_priority, irq_unpend, Interrupt};
+pub use irq::{irq_attach, irq_enable, irq_set_priority, irq_unpend, Interrupt};
 pub use semaphore::give_from_isr;
 
 use arch::core_periph;
