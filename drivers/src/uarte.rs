@@ -309,7 +309,7 @@ impl Uarte {
 
 pub extern "C" fn uarte0_handler() {
     // Acknowledge the interrupt
-    cortex_m::peripheral::NVIC::unpend(Interrupt::UARTE0_UART0);
+    kernel::irq_unpend(Interrupt::UARTE0_UART0);
 
     // Let the UARTE peripheral handle the interrupt
     UARTE0.handle_interrupt();
@@ -318,7 +318,7 @@ pub extern "C" fn uarte0_handler() {
 use bitfields::{bitfield, bitflag};
 use saturating_cast::SaturatingCast;
 
-use kernel::{core_periph, Interrupt};
+use kernel::Interrupt;
 use userlib::Semaphore;
 
 /// # Safety
@@ -356,14 +356,13 @@ pub fn uart_init() {
     let uart_enable = UartEnableBuilder::new().with_enable(true).build();
     regs.enable.write(uart_enable);
 
-    let core_periph = core_periph();
-    unsafe { core_periph.NVIC.set_priority(Interrupt::UARTE0_UART0, 0xC0) };
+    kernel::irq_set_priority(Interrupt::UARTE0_UART0, 0xC0);
     // Enable interrupts for ENDRX to handle double buffer switching
     regs.intenset
         .write(UartInterruptBuilder::new().with_endrx(true).build());
 
     // enable the interrupt in NVIC
-    unsafe { cortex_m::peripheral::NVIC::unmask(Interrupt::UARTE0_UART0) };
+    kernel::irq_enable(Interrupt::UARTE0_UART0);
     // begin the background RX process
     regs.rxd.ptr.write(UARTE0.rx_buffer_1.as_ptr() as u32);
     regs.rxd

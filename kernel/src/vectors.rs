@@ -257,6 +257,36 @@ pub fn irq_attach(irq: Interrupt, handler: extern "C" fn()) {
     });
 }
 
+// SAFETY (for the NVIC functions below): cortex-m marks priority changes and
+// unmasking `unsafe` because they can break critical sections built on BASEPRI
+// or on masking individual interrupts. This kernel's critical sections use
+// PRIMASK only (`critical_section` / `interrupt::free`), which neither
+// operation affects, so they are safe to expose.
+
+/// Set the NVIC priority of `irq` (nRF52840: the top 3 bits count, 0x00 is
+/// highest). Privileged code only (`user_main` or an ISR).
+pub fn irq_set_priority(irq: Interrupt, priority: u8) {
+    // Write IPR directly instead of going through `core_periph()`, which would
+    // create a second `&mut Peripherals` if called from an ISR.
+    let nvic = cortex_m::peripheral::NVIC::PTR;
+    unsafe { (*nvic).ipr[irq as usize].write(priority) };
+}
+
+/// Enable `irq` in the NVIC. Privileged code only. Panics if no handler is
+/// attached (`irq_attach`): the interrupt would end up in `default_handler`,
+/// which spins forever.
+pub fn irq_enable(irq: Interrupt) {
+    let attached =
+        cortex_m::interrupt::free(|_| unsafe { (*IRQ_TABLE.as_ptr())[irq as usize].is_some() });
+    assert!(attached, "irq_enable before irq_attach");
+    unsafe { cortex_m::peripheral::NVIC::unmask(irq) };
+}
+
+/// Clear `irq`'s pending bit in the NVIC. Privileged code only.
+pub fn irq_unpend(irq: Interrupt) {
+    cortex_m::peripheral::NVIC::unpend(irq);
+}
+
 pub static CORE_PERIPHERALS: Global<Option<Peripherals>> = Global::new(None);
 
 pub fn core_periph() -> &'static mut Peripherals {

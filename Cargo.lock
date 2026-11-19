@@ -133,7 +133,6 @@ name = "drivers"
 version = "0.1.0"
 dependencies = [
  "bitfields",
- "cortex-m",
  "kernel",
  "saturating_cast",
  "userlib",
