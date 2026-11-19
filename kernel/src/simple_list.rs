@@ -67,7 +67,7 @@ impl<T> SimpleList<T> {
     where
         F: FnMut(&mut T) -> bool,
     {
-        for (_, slot) in self.data.iter_mut().enumerate() {
+        for slot in self.data.iter_mut() {
             if let Some(item) = slot {
                 if !f(item) {
                     *slot = None;
