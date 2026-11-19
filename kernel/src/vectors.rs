@@ -8,7 +8,7 @@
 //!
 //! Every external interrupt goes through `irq_dispatch`, which looks up the
 //! handler the application registered with `irq_attach`. That keeps driver code
-//! (in the `app` crate, user flash) out of the kernel crate.
+//! (in the `drivers` and `app` crates, user flash) out of the kernel crate.
 use core::arch::{asm, global_asm};
 
 use cortex_m::Peripherals;
@@ -245,7 +245,8 @@ extern "C" fn irq_dispatch() {
 
 /// Route `irq` to `handler`. Call from `user_main` (privileged, before the
 /// scheduler starts), before enabling the interrupt in the NVIC. The handler
-/// runs privileged, but its code must live in user flash (the `app` crate).
+/// runs privileged, but its code must live in user flash (the `drivers` or
+/// `app` crate).
 pub fn irq_attach(irq: Interrupt, handler: extern "C" fn()) {
     assert!(
         crate::is_user_text(handler as usize),

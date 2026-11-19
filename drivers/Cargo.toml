@@ -1,0 +1,16 @@
+[package]
+name = "drivers"
+version = "0.1.0"
+edition = "2021"
+
+# Peripheral drivers (MMIO register blocks, UARTE, TIMER, PPI) and the data
+# structures they use. Linked into user flash like any non-kernel crate. Driver
+# ISRs run privileged and may use the kernel's ISR API; thread-facing methods
+# reach the kernel only through `userlib` syscalls.
+
+[dependencies]
+kernel = { path = "../kernel", default-features = false }
+userlib = { path = "../userlib" }
+bitfields = "3.2.1"
+cortex-m = "0.7.10"
+saturating_cast = "0.1.0"

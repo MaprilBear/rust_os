@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 # Everything in this crate is linked into the privileged-only KFLASH/KRAM
-# regions (see link.ld). Code that threads call must live in `userlib` or `app`.
+# regions (see link.ld). Code that threads call must live in a user crate
+# (`userlib`, `drivers`, `app`).
 
 [features]
 # Quick-and-dirty console for Renode (src/debugcon.rs). Enabled from `app`.

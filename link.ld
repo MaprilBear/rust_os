@@ -65,9 +65,9 @@ SECTIONS
     {
         _sdata = .;
         /* Kernel semaphore objects (see semaphore!). Matched by *section name*
-         * because the macro expands in the app crate. They sit first so the
-         * kernel can validate a user-supplied handle as "inside [_sksem, _eksem)
-         * and a multiple of the object size". */
+         * because the macro expands in user crates (drivers, app). They sit
+         * first so the kernel can validate a user-supplied handle as "inside
+         * [_sksem, _eksem) and a multiple of the object size". */
         _sksem = .;
         *(.ksem .ksem.*)
         _eksem = .;

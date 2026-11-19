@@ -1,21 +1,15 @@
-//! Application image: drivers, user threads and their interrupt handlers.
+//! Application image: user threads and the drivers they use (`drivers` crate).
 //!
 //! Everything in this crate is linked into user flash/RAM (link.ld only claims
 //! the `kernel` crate for the privileged regions). Threads run unprivileged and
-//! reach the kernel through `userlib` syscalls; driver ISRs run privileged and
-//! may call the kernel's ISR API (`kernel::give_from_isr`).
-#![allow(future_incompatible)] // saturating_cast vs. a possible future std method
+//! reach the kernel through `userlib` syscalls. `user_main` runs privileged and
+//! wires up the drivers' interrupt handlers.
 #![no_std]
 #![no_main]
 
-mod fifo;
-mod mmio;
 mod panic;
-mod ppi;
-mod timer;
-mod uarte;
 
-use crate::uarte::UARTE0;
+use drivers::uarte::{self, UARTE0};
 use userlib::{sys_sleep, sys_yield};
 
 /// Called once by the kernel's reset handler: privileged, on MSP, after the
