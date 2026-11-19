@@ -18,6 +18,7 @@ static STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Who made a syscall.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: built by test support
 pub enum Caller {
     /// The privileged boot code, before the scheduler runs.
     Boot,
@@ -115,6 +116,7 @@ mod syscall_impl {
 
 /// Run syscall number `num` with argument `arg0` for `caller` (the running
 /// thread, or the boot code). Returns the caller's return value.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: called by test support
 pub(crate) fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
     let syscall_num = Syscall::try_from(num).unwrap_or(Syscall::Invalid);
 

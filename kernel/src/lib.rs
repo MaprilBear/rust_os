@@ -12,7 +12,8 @@
 //! application's `#[no_mangle] extern "C" fn user_main()` to register threads
 //! and drivers.
 //!
-//! Everything CPU- or linker-specific is behind `arch` (see `arch/mod.rs`).
+//! Everything CPU- or linker-specific is behind `arch` (see `arch/mod.rs`), so
+//! the rest of the crate also builds for a host and runs in host tests.
 
 #[macro_use]
 pub mod debugcon;
@@ -65,6 +66,7 @@ pub struct TCB {
 type ThreadId = usize;
 
 /// One SysTick period: advance sleep timers and request a reschedule.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no SysTick
 pub(crate) fn os_tick() {
     unsafe { scheduler().tick() };
     os_yield();
@@ -104,6 +106,7 @@ fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
 }
 
 /// Called once by the boot code, before `user_main`.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no boot code
 fn os_init() {
     arch::init_heaps();
     os_add_thread(userlib::idle_thread, 1024, 7);

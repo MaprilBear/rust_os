@@ -13,12 +13,15 @@
 //!
 //! Needs no setup: no clock, pins or `.data`/`.bss`, so it works from the very
 //! first instruction of `Reset`.
+//!
+//! On a host build the console is always enabled and writes to a capped
+//! in-memory buffer (`arch::host`).
 
 use core::fmt::{self, Write};
 
 /// Whether the console is compiled in. The macros test this rather than
 /// `cfg!(feature = "debugcon")`, which would be evaluated in the calling crate.
-pub const ENABLED: bool = cfg!(feature = "debugcon");
+pub const ENABLED: bool = cfg!(feature = "debugcon") || cfg!(not(target_os = "none"));
 
 /// Send one byte (`arch::log_putc` knows where the console is).
 pub fn putc(byte: u8) {

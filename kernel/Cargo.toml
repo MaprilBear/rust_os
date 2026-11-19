@@ -6,6 +6,11 @@ edition = "2021"
 # Everything in this crate is linked into the privileged-only KFLASH/KRAM
 # regions (see link.ld). Code that threads call must live in a user crate
 # (`userlib`, `drivers`, `app`).
+#
+# The crate builds for two kinds of target (see src/arch/mod.rs):
+#   * bare metal (target_os = "none"): the real kernel, arch::armv7m.
+#   * a host OS (e.g. x86_64 Linux): arch::host, a fake port so the portable
+#     kernel can run in host tests. No assembly, no MMIO.
 
 [features]
 # Quick-and-dirty console for Renode (src/debugcon.rs). Enabled from `app`.
@@ -13,7 +18,13 @@ debugcon = []
 
 [dependencies]
 userlib = { path = "../userlib" }
+critical-section = "1.2.0"
+
+[target.'cfg(target_os = "none")'.dependencies]
 bitfields = "3.2.1"
 cortex-m = { version = "0.7.10", features = ["critical-section-single-core"] }
-critical-section = "1.2.0"
 embedded-alloc = "0.7.0"
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# On a host there are no interrupts to mask; a global (reentrant) mutex stands in.
+critical-section = { version = "1.2.0", features = ["std"] }

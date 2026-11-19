@@ -113,6 +113,7 @@ static IRQ_TABLE: [AtomicPtr<()>; NUM_IRQS] = [const { AtomicPtr::new(ptr::null_
 
 /// The handler registered for IRQ line `irq`, if any. Called by the
 /// architecture's common IRQ entry.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no vector table
 pub(crate) fn handler_for(irq: usize) -> Option<extern "C" fn()> {
     let handler = IRQ_TABLE.get(irq)?.load(Ordering::Acquire);
     // Safety: only `irq_attach` stores non-null values, and it stores

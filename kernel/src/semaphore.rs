@@ -70,7 +70,7 @@ impl KSemaphore {
 #[macro_export]
 macro_rules! semaphore {
     ($count:expr) => {{
-        #[link_section = ".ksem"]
+        #[cfg_attr(target_os = "none", link_section = ".ksem")]
         static KOBJ: $crate::semaphore::KSemaphore = $crate::semaphore::KSemaphore::new($count);
         $crate::semaphore::__handle_for(&KOBJ)
     }};
@@ -87,6 +87,7 @@ pub const fn __handle_for(k: &'static KSemaphore) -> userlib::Semaphore {
 
 /// A handle is only valid if it is exactly the address of a `KSemaphore` in `.ksem`.
 /// User code controls the value, so this check is the whole security boundary.
+/// (On a host build `.ksem` is empty, so every handle is rejected.)
 fn lookup(handle: usize) -> Option<&'static KSemaphore> {
     let range = arch::ksem_range();
     let size = size_of::<KSemaphore>();
