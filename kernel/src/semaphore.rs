@@ -48,6 +48,9 @@ struct KSemState {
 #[doc(hidden)]
 pub struct KSemaphore {
     state: UnsafeCell<KSemState>,
+    /// The count it was created with, so host test support can reset it.
+    #[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+    initial: isize,
 }
 
 // Only touched from privileged code, inside critical sections.
@@ -61,6 +64,8 @@ impl KSemaphore {
                 count,
                 waiters: VecDeque::new(),
             }),
+            #[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+            initial: count,
         }
     }
 }
@@ -87,11 +92,15 @@ pub const fn __handle_for(k: &'static KSemaphore) -> userlib::Semaphore {
 
 /// A handle is only valid if it is exactly the address of a `KSemaphore` in `.ksem`.
 /// User code controls the value, so this check is the whole security boundary.
-/// (On a host build `.ksem` is empty, so every handle is rejected.)
+/// (On a host build `.ksem` is empty, so every handle is rejected unless host
+/// test support registered it or set a range.)
 fn lookup(handle: usize) -> Option<&'static KSemaphore> {
     let range = arch::ksem_range();
     let size = size_of::<KSemaphore>();
-    if range.contains(&handle) && (handle - range.start).is_multiple_of(size) {
+    let in_ksem = range.contains(&handle) && (handle - range.start).is_multiple_of(size);
+    #[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+    let in_ksem = in_ksem || arch::host::testing::ksem_registered(handle);
+    if in_ksem {
         Some(unsafe { &*(handle as *const KSemaphore) })
     } else {
         None
@@ -156,4 +165,19 @@ pub fn give_from_isr(sem: &userlib::Semaphore) {
         Some(false) => {}
         None => panic!("bad semaphore handle"),
     }
+}
+
+/// Test support: put the semaphore behind `handle` back in its initial state
+/// (initial count, no waiters).
+///
+/// # Safety
+/// `handle` must come from a `userlib::Semaphore` created by `semaphore!`.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) unsafe fn reset_object(handle: usize) {
+    let sem = &*(handle as *const KSemaphore);
+    critical_section::with(|_| {
+        let st = &mut *sem.state.get();
+        st.count = sem.initial;
+        st.waiters.clear();
+    });
 }

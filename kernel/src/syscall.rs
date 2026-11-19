@@ -133,3 +133,9 @@ pub(crate) fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
         }
     }
 }
+
+/// Test support: allow `Start` again.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) fn reset() {
+    STARTED.store(false, core::sync::atomic::Ordering::SeqCst);
+}

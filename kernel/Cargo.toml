@@ -15,6 +15,10 @@ edition = "2021"
 [features]
 # Quick-and-dirty console for Renode (src/debugcon.rs). Enabled from `app`.
 debugcon = []
+# Host only: exposes `kernel::test_support` (state reset, simulation helpers,
+# fake-port inspection) to other crates' tests, e.g. `drivers`. The kernel's
+# own unit tests get it through cfg(test).
+test-support = []
 
 [dependencies]
 userlib = { path = "../userlib" }

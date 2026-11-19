@@ -15,6 +15,12 @@
 //! Everything CPU- or linker-specific is behind `arch` (see `arch/mod.rs`), so
 //! the rest of the crate also builds for a host and runs in host tests.
 
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+extern crate std;
+
+#[cfg(all(target_os = "none", feature = "test-support"))]
+compile_error!("the `test-support` feature is for host builds only");
+
 #[macro_use]
 pub mod debugcon;
 
@@ -24,6 +30,8 @@ mod scheduler;
 pub mod semaphore;
 mod simple_list;
 mod syscall;
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub mod test_support;
 
 extern crate alloc;
 
@@ -40,7 +48,7 @@ fn is_user_text(addr: usize) -> bool {
     arch::user_text_range().contains(&(addr & !1))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThreadState {
     Ready,
     Running,

@@ -155,3 +155,11 @@ pub fn irq_enable(irq: Interrupt) {
 pub fn irq_unpend(irq: Interrupt) {
     arch::nvic_unpend(irq);
 }
+
+/// Test support: forget every registered handler.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) fn reset() {
+    for slot in &IRQ_TABLE {
+        slot.store(ptr::null_mut(), Ordering::Release);
+    }
+}
