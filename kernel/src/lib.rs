@@ -221,23 +221,24 @@ pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8)
 /// unprivileged on the kernel stack. Instead we trap into SVC, where handler
 /// mode sets nPRIV and PendSV exception-returns into the first thread.
 fn os_start() -> ! {
-    unsafe { asm!("svc #0") };
+    // The SVC handler writes a return value into the stacked r0 (see
+    // userlib's syscall! macro), so r0 must be declared clobbered here too.
+    unsafe { asm!("svc #0", lateout("r0") _) };
     panic!("os_start should never return");
 }
 
+/// Pend PendSV: the switch happens once no higher-priority exception is
+/// active. A plain volatile store; the previous inline asm wrote r0/r1 without
+/// declaring them, which corrupted live registers wherever it was inlined.
 pub extern "C" fn context_switch() {
-    unsafe {
-        asm!(
-            "LDR     R0, ={int_ctrl}    ",
-            "LDR     R1, ={pendsv}      ", // Execution will leave this thread until scheduled again
-            "STR     R1, [R0]",
-            int_ctrl = const 0xE000_ED04u32,
-            pendsv = const 0x1000_0000u32,
-        )
-    }
+    const ICSR: *mut u32 = 0xE000_ED04 as *mut u32;
+    const PENDSVSET: u32 = 1 << 28;
+    unsafe { ICSR.write_volatile(PENDSVSET) };
 }
 
-/// Kernel-internal yield (handler mode / boot). Threads call `sys_yield`.
+/// Kernel-internal yield. Handler mode only (SysTick, SVC, ISRs): PendSV has
+/// the lowest priority, so the switch happens on exception return. Threads
+/// call `sys_yield`.
 fn os_yield() {
     context_switch();
 }
