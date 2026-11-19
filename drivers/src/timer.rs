@@ -43,7 +43,6 @@ pub struct TimerInt {
 #[repr(transparent)]
 pub struct TimerMode(u32);
 
-#[allow(unused)]
 impl TimerMode {
     pub const TIMER: Self = Self(0x0);
     pub const COUNTER: Self = Self(0x1);
@@ -54,7 +53,6 @@ impl TimerMode {
 #[repr(transparent)]
 pub struct TimerBitmode(u32);
 
-#[allow(unused)]
 impl TimerBitmode {
     pub const BIT_16: Self = Self(0x0);
     pub const BIT_08: Self = Self(0x1);
@@ -102,18 +100,12 @@ pub struct TimerRegs {
     pub cc5: Reg<u32, Rw>,              // 0x554
 }
 
-#[allow(unused)]
 const TIMER0_BASE: usize = 0x40008000;
-#[allow(unused)]
 const TIMER1_BASE: usize = 0x40009000;
-#[allow(unused)]
 const TIMER2_BASE: usize = 0x4000A000;
-#[allow(unused)]
 const TIMER3_BASE: usize = 0x4001A000;
-#[allow(unused)]
 const TIMER4_BASE: usize = 0x4001B000;
 
-#[allow(unused)]
 pub struct Timer {
     pub regs_semaphore: Semaphore,
     pub regs: Mmio<TimerRegs>,
@@ -124,19 +116,17 @@ unsafe impl Send for Timer {}
 // Timer peripherals are thread safe via semaphores
 unsafe impl Sync for Timer {}
 
-#[allow(unused)]
 pub static TIMER0: Timer = unsafe { Timer::new(TIMER0_BASE) };
-#[allow(unused)]
 pub static TIMER1: Timer = unsafe { Timer::new(TIMER1_BASE) };
-#[allow(unused)]
 pub static TIMER2: Timer = unsafe { Timer::new(TIMER2_BASE) };
-#[allow(unused)]
 pub static TIMER3: Timer = unsafe { Timer::new(TIMER3_BASE) };
-#[allow(unused)]
 pub static TIMER4: Timer = unsafe { Timer::new(TIMER4_BASE) };
 
 impl Timer {
-    pub const unsafe fn new(base: usize) -> Self {
+    /// # Safety
+    /// `base` must be the address of this peripheral's register block, and only
+    /// one instance may exist per peripheral (the statics above).
+    const unsafe fn new(base: usize) -> Self {
         Self {
             regs_semaphore: semaphore!(1),
             regs: unsafe { Mmio::new(base) },

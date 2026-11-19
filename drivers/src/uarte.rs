@@ -97,7 +97,7 @@ struct UartPsel {
 #[repr(transparent)]
 struct UartBaudRate(u32);
 
-#[allow(unused)]
+#[allow(unused)] // the full table, though only some rates are used
 impl UartBaudRate {
     const B1200: Self = Self(0x0004_F000);
     const B2400: Self = Self(0x0009_D000);
@@ -210,7 +210,6 @@ struct UarteRegs {
 }
 
 const UART0E_BASE: usize = 0x40002000;
-#[allow(unused)]
 const UART1E_BASE: usize = 0x40028000;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -233,7 +232,6 @@ pub struct Uarte {
 }
 
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
-#[allow(unused)]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 impl Uarte {
@@ -256,7 +254,7 @@ impl Uarte {
         regs.txd.ptr.write(buffer.as_ptr() as u32);
         regs.txd.maxcnt.write(
             Count16Builder::new()
-                .with_count(buffer.len().saturating_cast::<u16>())
+                .with_count(SaturatingCast::saturating_cast::<u16>(buffer.len()))
                 .build(),
         );
 
@@ -274,7 +272,7 @@ impl Uarte {
     /// Read bytes into the provided buffer until full, or until the given timeout is exceeded.
     /// Returns the number of bytes received.
     pub fn receive(&self, buffer: &mut [u8]) -> u16 {
-        self.rx_fifo.pop_into(buffer).saturating_cast::<u16>()
+        SaturatingCast::saturating_cast::<u16>(self.rx_fifo.pop_into(buffer))
     }
 
     fn handle_interrupt(&self) {
@@ -321,8 +319,9 @@ use saturating_cast::SaturatingCast;
 use kernel::Interrupt;
 use userlib::Semaphore;
 
-/// # Safety
-/// This function should not be called post-OS initialization.
+/// Configure UARTE0 and start background reception. Call once, from `user_main`
+/// (privileged, before the scheduler starts), after attaching `uarte0_handler`
+/// with `kernel::irq_attach`.
 pub fn uart_init() {
     // Setup a basic non conflicting PSEL config (no RTS/CTS)
     // TODO: Allow this to be user defined
