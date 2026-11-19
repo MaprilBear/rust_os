@@ -48,32 +48,53 @@ impl TryFrom<u8> for Syscall {
 // Syscall wrappers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Issue syscall `$num` (optionally with `$arg` in r0) and return the
+/// kernel's r0.
+///
+/// Every `svc` in this project must declare r0 as an output: the kernel
+/// *always* writes a return value into the caller's stacked r0, even for calls
+/// whose result is ignored. Otherwise the compiler may assume r0 survived the
+/// `svc` (or hoist an r0 input out of a loop). r1-r3, r12 and xPSR come back
+/// from the hardware-stacked frame unchanged, and PendSV preserves r4-r11.
+///
+/// No `options(...)` on purpose: the defaults (may read/write memory, may use
+/// the stack, clobbers flags) are right for a call into the kernel, which can
+/// write user memory and let other threads run before returning.
+macro_rules! syscall {
+    ($num:expr) => {{
+        let r0: u32;
+        unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, lateout("r0") r0) };
+        r0
+    }};
+    ($num:expr, $arg:expr) => {{
+        let r0: u32;
+        unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, inout("r0") $arg => r0) };
+        r0
+    }};
+}
+
 #[inline(always)]
 pub fn sys_yield() {
-    unsafe { asm!("svc #{0}", const Syscall::Yield as u32) };
+    syscall!(Syscall::Yield);
 }
 
 #[inline(always)]
 pub fn sys_sleep(ms: u32) {
-    unsafe { asm!("svc #{0}", const Syscall::Sleep as u32, in("r0") ms) };
+    syscall!(Syscall::Sleep, ms);
 }
 
 pub fn sys_sem_take(handle: u32) -> u32 {
-    let r0: u32;
-    unsafe { asm!("svc #{0}", const Syscall::SemTake as u32, inout("r0") handle => r0) };
-    r0
+    syscall!(Syscall::SemTake, handle)
 }
 
 pub fn sys_sem_give(handle: u32) -> u32 {
-    let r0: u32;
-    unsafe { asm!("svc #{0}", const Syscall::SemGive as u32, inout("r0") handle => r0) };
-    r0
+    syscall!(Syscall::SemGive, handle)
 }
 
 /// Report that the calling thread cannot continue. The kernel does not return
 /// to it.
 pub fn sys_fault() -> ! {
-    unsafe { asm!("svc #{0}", const Syscall::Fault as u32) };
+    syscall!(Syscall::Fault);
     // Guard in case the kernel ever returns.
     loop {
         core::hint::spin_loop()
