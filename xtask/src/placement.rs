@@ -7,11 +7,17 @@
 //!     landed in a kernel output section, or
 //!   * the kernel crate contributed nothing to KFLASH. That is what happens when
 //!     LTO merges every crate into one object: the link "succeeds" but the whole
-//!     kernel is in user memory.
+//!     kernel is in user memory, or
+//!   * the map does not describe the ELF it is checked with (a stale map from
+//!     an older link would otherwise make the whole check meaningless).
 //!
 //! Why a map file: the kernel crate also has #[no_mangle] symbols (`ResetHandler`,
 //! `CURR_TCB`, ...) whose names don't say which crate they came from, but the map
 //! records the input file each section came from.
+
+use std::collections::BTreeMap;
+
+use crate::elf;
 
 const KERNEL_OUT: &[&str] = &[".vector_table", ".text", ".rodata", ".data", ".bss"];
 const USER_OUT: &[&str] = &[".user_text", ".user_rodata", ".user_data", ".user_bss"];
@@ -19,6 +25,7 @@ const USER_OUT: &[&str] = &[".user_text", ".user_rodata", ".user_data", ".user_b
 /// One lld map row:  `VMA LMA Size Align <indent>Text`. Indent 0 is an output
 /// section, 8 an input section, 16 a symbol.
 struct Row<'a> {
+    vma: u64,
     size: u64,
     indent: usize,
     text: &'a str,
@@ -41,11 +48,12 @@ fn parse_row(line: &str) -> Option<Row<'_>> {
         return None;
     }
     let hex = |s: &str| u64::from_str_radix(s, 16).ok();
-    let (_vma, _lma, size) = (hex(fields[0])?, hex(fields[1])?, hex(fields[2])?);
+    let (vma, _lma, size) = (hex(fields[0])?, hex(fields[1])?, hex(fields[2])?);
     if !fields[3].bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     Some(Row {
+        vma,
         size,
         indent: spaces - 1,
         text,
@@ -80,17 +88,21 @@ fn is_kernel_file(file: &str) -> bool {
 pub struct Report {
     pub errors: Vec<String>,
     pub kernel_text_bytes: u64,
+    /// Output sections as listed in the map: name -> (address, size).
+    pub out_sections: BTreeMap<String, (u64, u64)>,
 }
 
 pub fn check_map(map: &str) -> Report {
     let mut out: Option<&str> = None;
     let mut errors = Vec::new();
     let mut kernel_text_bytes = 0;
+    let mut out_sections = BTreeMap::new();
 
     for line in map.lines() {
         let Some(row) = parse_row(line) else { continue };
         if row.indent == 0 {
             out = Some(row.text);
+            out_sections.insert(row.text.to_string(), (row.vma, row.size));
             continue;
         }
         if row.indent != 8 || row.size == 0 {
@@ -131,5 +143,31 @@ pub fn check_map(map: &str) -> Report {
     Report {
         errors,
         kernel_text_bytes,
+        out_sections,
+    }
+}
+
+/// Errors if the map's output sections do not match the ELF's allocated
+/// sections (address and size), i.e. the map is not from the link that
+/// produced this ELF.
+pub fn check_map_matches_elf(report: &Report, elf_data: &[u8]) -> Result<(), String> {
+    let sections = elf::alloc_sections(elf_data)?;
+    let mut mismatches = Vec::new();
+    for (name, &(addr, size)) in &sections {
+        match report.out_sections.get(name) {
+            Some(&m) if m == (addr, size) => {}
+            Some(&(maddr, msize)) => mismatches.push(format!(
+                "{name}: ELF {addr:#x}+{size:#x}, map {maddr:#x}+{msize:#x}"
+            )),
+            None => mismatches.push(format!("{name}: in the ELF but not in the map")),
+        }
+    }
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the linker map does not describe this ELF (stale map from an older link?):\n  {}",
+            mismatches.join("\n  ")
+        ))
     }
 }

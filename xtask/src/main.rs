@@ -5,6 +5,7 @@
 //! invocation (`$ cargo ...`) before running it, so any step can be reproduced
 //! by hand.
 
+mod elf;
 mod placement;
 
 use std::env;
@@ -35,7 +36,7 @@ const COMMANDS: &[Cmd] = &[
     },
     Cmd {
         name: "check-placement",
-        usage: "check-placement [--release] [--map <path>]\n    \
+        usage: "check-placement [--release] [--map <path>] [--elf <path>]\n    \
                 check the placement of an already-built image",
         run: check_placement_cmd,
     },
@@ -91,21 +92,30 @@ fn build(args: &[String]) -> Result {
     }
     cmd.args(&opts.passthrough);
     run(&mut cmd)?;
-    check_placement(&map_path(release))
+    check_placement(&map_path(release), &elf_path(release))
 }
 
 fn check_placement_cmd(args: &[String]) -> Result {
-    let opts = Opts::parse(args, &["--release"], &["--map"])?;
+    let opts = Opts::parse(args, &["--release"], &["--map", "--elf"])?;
+    let release = opts.flag("--release");
     let map = opts
         .value("--map")
-        .map_or_else(|| map_path(opts.flag("--release")), PathBuf::from);
-    check_placement(&map)
+        .map_or_else(|| map_path(release), PathBuf::from);
+    let elf = opts
+        .value("--elf")
+        .map_or_else(|| elf_path(release), PathBuf::from);
+    check_placement(&map, &elf)
 }
 
-fn check_placement(map: &Path) -> Result {
+fn check_placement(map: &Path, elf: &Path) -> Result {
     let map_text = fs::read_to_string(map)
         .map_err(|e| format!("cannot read linker map {}: {e}", map.display()))?;
+    let elf_data = fs::read(elf).map_err(|e| format!("cannot read ELF {}: {e}", elf.display()))?;
+
     let report = placement::check_map(&map_text);
+    placement::check_map_matches_elf(&report, &elf_data)
+        .map_err(|e| format!("{} vs {}: {e}", map.display(), elf.display()))?;
+
     for e in &report.errors {
         eprintln!("PLACEMENT ERROR: {e}");
     }
@@ -179,14 +189,21 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Where app/build.rs tells the linker to write the map.
-fn map_path(release: bool) -> PathBuf {
+fn profile_dir(release: bool) -> PathBuf {
     let target =
         env::var_os("CARGO_TARGET_DIR").map_or_else(|| root().join("target"), |d| root().join(d));
     target
         .join(FIRMWARE_TARGET)
         .join(if release { "release" } else { "debug" })
-        .join(format!("{FIRMWARE_BIN}.map"))
+}
+
+fn elf_path(release: bool) -> PathBuf {
+    profile_dir(release).join(FIRMWARE_BIN)
+}
+
+/// Where app/build.rs tells the linker to write the map.
+fn map_path(release: bool) -> PathBuf {
+    profile_dir(release).join(format!("{FIRMWARE_BIN}.map"))
 }
 
 /// `cargo`, the same binary that is running this xtask when there is one.
