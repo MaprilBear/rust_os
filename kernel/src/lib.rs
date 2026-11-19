@@ -48,7 +48,8 @@ pub enum ThreadState {
 }
 
 // PendSVHandler stores the saved SP at byte offset 4 (`str r2, [r1, #4]`), so
-// `priority` then `sp` must stay the first two fields.
+// `priority` then `sp` must stay the first two fields (checked at compile time
+// in arch/armv7m/vectors.rs).
 #[repr(C)]
 pub struct TCB {
     priority: u8,
@@ -69,27 +70,6 @@ pub(crate) fn os_tick() {
     os_yield();
 }
 
-// Saved exception frame layout (for a fresh stack)
-// ^ 0xFFFF_FFFF
-// |
-// -1   | PSR -- (top of stack)
-// -2  | PC   |
-// -3  | LR   |
-// -4  | R12  | popped by returning from an exception
-// -5  | R3   |
-// -6  | R2   |
-// -7  | R1   |
-// -8  | R0 ---
-// -9  | R4 ----
-// -10  | R5    |
-// -11 | R6    |
-// -12 | R7    |
-// -13 | R8    | popped manually by the PendSV Handler
-// -14 | R9    |
-// -15 | R10   |
-// -16 | R11 ---   <---- current stack pointer
-// |
-// V 0x0000_0000
 pub type ThreadEntry = extern "C" fn() -> !;
 fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
     // Threads run unprivileged, so their code must be in user flash.
@@ -107,17 +87,9 @@ fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
         let base = arch::alloc_user_stack(layout);
         assert!(!base.is_null(), "out of user memory for thread stack");
 
-        let stack_top = base.add(stack_words * 4) as *mut u32;
-        let sp = stack_top.sub(16);
-        let lr = stack_top.sub(3);
-        let pc = stack_top.sub(2);
-        let psr = stack_top.sub(1);
-
-        // Thread entries are `-> !`, so this LR is never used. Poison it so a
-        // bad return faults loudly instead of running garbage.
-        *lr = 0xFFFF_FFFF;
-        *pc = (thread_entry as usize as u32) | 1; // Thumb bit
-        *psr = 1 << 24; // Set thumb bit
+        // The allocation is zeroed, word-aligned and owned by this thread.
+        let stack = core::slice::from_raw_parts_mut(base as *mut u32, stack_words);
+        let sp = (base as *mut u32).add(arch::init_stack(stack, thread_entry as usize));
 
         scheduler().add_thread(TCB {
             id: 0,

@@ -151,6 +151,9 @@ extern "C" fn systick_handler() {
     crate::os_tick();
 }
 
+// PendSV saves/loads a thread's SP at byte offset 4 of its TCB.
+const _: () = assert!(core::mem::offset_of!(crate::TCB, sp) == 4);
+
 // This handler returns via EXC_RETURN, so it must not have a Rust prologue.
 global_asm!(
     ".global PendSVHandler",

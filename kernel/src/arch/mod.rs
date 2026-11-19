@@ -18,12 +18,13 @@
 //! | `init_heaps`, `alloc_user_stack` | kernel heap (KRAM), user heap (URAM)  |
 //! | `user_text_range`, `ksem_range`, `flash_range`, `uram_range` | link.ld symbols |
 //! | `log_putc`                     | debug console @ 0x6000_0000             |
+//! | `init_stack`                   | initial exception frame of a thread     |
 //! | `halt`                         | spin forever                            |
 
 mod armv7m;
 
 pub(crate) use self::armv7m::{
-    alloc_user_stack, flash_range, frc, halt, init_heaps, ksem_range, log_putc, nvic_enable,
-    nvic_set_priority, nvic_unpend, pend_context_switch, start_systick, uram_range,
+    alloc_user_stack, flash_range, frc, halt, init_heaps, init_stack, ksem_range, log_putc,
+    nvic_enable, nvic_set_priority, nvic_unpend, pend_context_switch, start_systick, uram_range,
     user_text_range,
 };

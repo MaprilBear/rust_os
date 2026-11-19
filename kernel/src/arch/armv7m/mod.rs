@@ -1,5 +1,6 @@
 //! Cortex-M4F (nRF52840) backend. See `arch/mod.rs` for the interface.
 
+mod frame;
 mod reset;
 mod svc;
 mod vectors;
@@ -17,6 +18,8 @@ use embedded_alloc::TlsfHeap as Heap;
 use userlib::Global;
 
 use crate::irq::Interrupt;
+
+pub(crate) use self::frame::init_stack;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Linker-script symbols (link.ld)
