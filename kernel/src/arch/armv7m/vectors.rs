@@ -11,12 +11,9 @@
 //! (in the `drivers` and `app` crates, user flash) out of the kernel crate.
 use core::arch::{asm, global_asm};
 
-use cortex_m::Peripherals;
-use userlib::Global;
-
+use super::halt;
 use super::reset::ResetHandler;
 use crate::irq::{self, NUM_IRQS};
-use crate::SystickHandler;
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
     static _estack: u32;
@@ -67,7 +64,7 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(default_handler),   // 12 DebugMonitor
         RESERVED,                   // 13
         handler(PendSVHandler),     // 14 PendSV
-        handler(SystickHandler),    // 15 SysTick
+        handler(systick_handler),   // 15 SysTick
     ],
     irqs: [
         handler(irq_dispatch), // 0 POWER_CLOCK
@@ -137,18 +134,6 @@ extern "C" fn irq_dispatch() {
     }
 }
 
-pub static CORE_PERIPHERALS: Global<Option<Peripherals>> = Global::new(None);
-
-pub fn core_periph() -> &'static mut Peripherals {
-    // Safety: single core; caller must not hold two of these at once
-    // and must not use it from an ISR while thread code holds it.
-    unsafe {
-        (*CORE_PERIPHERALS.as_ptr())
-            .as_mut()
-            .expect("CORE not initialized")
-    }
-}
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Handlers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -158,8 +143,12 @@ pub fn core_periph() -> &'static mut Peripherals {
 /// and check `sysbus.cpu PC`.
 pub extern "C" fn default_handler() {
     dprintln!("Exception!");
-    #[allow(clippy::empty_loop)]
-    loop {}
+    halt("unexpected exception");
+}
+
+/// One scheduler tick (1 ms).
+extern "C" fn systick_handler() {
+    crate::os_tick();
 }
 
 // This handler returns via EXC_RETURN, so it must not have a Rust prologue.
@@ -206,8 +195,7 @@ pub extern "C" fn memmanage_handler() {
     let cfsr = unsafe { core::ptr::read_volatile(0xE000_ED28 as *const u32) };
     let mmfar = unsafe { core::ptr::read_volatile(0xE000_ED34 as *const u32) };
     dprintln!("MemManage: CFSR={:#x} MMFAR={:#x}", cfsr, mmfar);
-    #[allow(clippy::empty_loop)]
-    loop {}
+    halt("MemManage fault");
 }
 
 unsafe extern "C" {

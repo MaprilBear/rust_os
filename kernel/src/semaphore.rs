@@ -30,16 +30,9 @@
 use alloc::collections::VecDeque;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
-use core::ptr::addr_of;
 
 use crate::scheduler::{scheduler, Scheduler};
-use crate::{os_yield, ThreadId};
-
-unsafe extern "C" {
-    // Bounds of the `.ksem` input sections inside `.data` (link.ld).
-    static _sksem: u8;
-    static _eksem: u8;
-}
+use crate::{arch, os_yield, ThreadId};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Kernel object
@@ -93,9 +86,9 @@ pub const fn __handle_for(k: &'static KSemaphore) -> userlib::Semaphore {
 /// A handle is only valid if it is exactly the address of a `KSemaphore` in `.ksem`.
 /// User code controls the value, so this check is the whole security boundary.
 fn lookup(handle: usize) -> Option<&'static KSemaphore> {
-    let (start, end) = (addr_of!(_sksem) as usize, addr_of!(_eksem) as usize);
+    let range = arch::ksem_range();
     let size = size_of::<KSemaphore>();
-    if handle >= start && handle < end && (handle - start).is_multiple_of(size) {
+    if range.contains(&handle) && (handle - range.start).is_multiple_of(size) {
         Some(unsafe { &*(handle as *const KSemaphore) })
     } else {
         None
