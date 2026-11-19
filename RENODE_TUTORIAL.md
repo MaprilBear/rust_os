@@ -23,6 +23,10 @@ Your kernel is loaded as a plain ELF, the same binary you will flash later.
 Dockerfile              Rust + Renode 1.17.0 (portable) + QEMU + gdb-multiarch
 Makefile                all commands run inside the container as your user
 link.ld                 nRF52840 map: flash 1M @ 0x0, RAM 256K @ 0x20000000
+kernel/ userlib/        kernel and the syscall library for threads
+drivers/ app/           peripheral drivers and the firmware binary
+xtask/                  `cargo xtask`: build + placement check, test runners
+docs/TESTING.md         test framework and plan
 renode/
   nrf52840.repl         platform (stock nRF52840 + room for your additions)
   common.resc           create machine, load platform + ELF, show UART0

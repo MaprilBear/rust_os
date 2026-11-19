@@ -570,6 +570,11 @@ either way.)
 
 ## 5. File-by-file reference
 
+> The per-file notes below describe the original single-crate layout
+> (`src/main.rs`, `src/debugcon.rs`, ...). That code now lives in the crates
+> listed in the tree: the debug console is `kernel/src/debugcon.rs`, the vector
+> table `kernel/src/arch/armv7m/vectors.rs`, and the drivers are in `drivers/`.
+
 ```
 rust_os/
 ├── Dockerfile
@@ -584,11 +589,13 @@ rust_os/
 │   └── devcontainer.json
 ├── .cargo/
 │   └── config.toml
-├── src/
-│   ├── main.rs
-│   ├── debugcon.rs
-│   ├── uart.rs           (kept for reference, not compiled in)
-│   └── vectors.rs
+├── kernel/               privileged kernel crate (arch/ = Cortex-M port + host fake)
+├── userlib/              syscall wrappers for unprivileged threads
+├── drivers/              peripheral drivers (library)
+├── app/                  firmware binary: user_main + threads
+├── xtask/                `cargo xtask` build/test automation
+├── docs/
+│   └── TESTING.md        test framework and plan
 └── renode/
     ├── debugcon.py
     ├── nrf52840.repl
