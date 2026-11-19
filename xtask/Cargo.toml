@@ -13,3 +13,5 @@ publish = false
 [workspace]
 
 [dependencies]
+# Reads cargo's --message-format=json build messages.
+serde_json = "1"

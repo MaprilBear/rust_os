@@ -11,12 +11,12 @@ mod placement;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 
-/// The firmware's target triple (also the default in .cargo/config.toml).
-const FIRMWARE_TARGET: &str = "thumbv7em-none-eabihf";
 /// Name of the firmware binary (app/Cargo.toml `[[bin]]`).
 const FIRMWARE_BIN: &str = "rust_os";
+/// Name of the linker map app/build.rs writes into its OUT_DIR.
+const MAP_FILE: &str = "rust_os.map";
 
 type Result<T = ()> = std::result::Result<T, String>;
 
@@ -36,7 +36,7 @@ const COMMANDS: &[Cmd] = &[
     },
     Cmd {
         name: "check-placement",
-        usage: "check-placement [--release] [--map <path>] [--elf <path>]\n    \
+        usage: "check-placement --map <path> --elf <path>\n    \
                 check the placement of an already-built image",
         run: check_placement_cmd,
     },
@@ -84,27 +84,72 @@ fn main() -> ExitCode {
 
 fn build(args: &[String]) -> Result {
     let opts = Opts::parse(args, &["--release"], &[])?;
-    let release = opts.flag("--release");
-    let mut cmd = cargo();
-    cmd.arg("build");
-    if release {
-        cmd.arg("--release");
+    let mut cargo_args = Vec::new();
+    if opts.flag("--release") {
+        cargo_args.push("--release".to_string());
     }
-    cmd.args(&opts.passthrough);
-    run(&mut cmd)?;
-    check_placement(&map_path(release), &elf_path(release))
+    cargo_args.extend(opts.passthrough);
+    build_firmware(&cargo_args).map(drop)
 }
 
 fn check_placement_cmd(args: &[String]) -> Result {
-    let opts = Opts::parse(args, &["--release"], &["--map", "--elf"])?;
-    let release = opts.flag("--release");
-    let map = opts
-        .value("--map")
-        .map_or_else(|| map_path(release), PathBuf::from);
-    let elf = opts
-        .value("--elf")
-        .map_or_else(|| elf_path(release), PathBuf::from);
-    check_placement(&map, &elf)
+    let opts = Opts::parse(args, &[], &["--map", "--elf"])?;
+    let (Some(map), Some(elf)) = (opts.value("--map"), opts.value("--elf")) else {
+        return Err(format!(
+            "check-placement needs --map and --elf\n\n{}",
+            usage()
+        ));
+    };
+    check_placement(Path::new(map), Path::new(elf))
+}
+
+/// The ELF and linker map one firmware build produced.
+struct Firmware {
+    elf: PathBuf,
+    map: PathBuf,
+}
+
+/// `cargo build <cargo_args>` for the firmware, then the placement check.
+/// The ELF and map paths come from cargo's own build messages, so they are
+/// right for any profile, feature set, target dir or build dir.
+fn build_firmware(cargo_args: &[String]) -> Result<Firmware> {
+    let mut cmd = cargo();
+    cmd.args(["build", "--message-format=json-render-diagnostics"])
+        .args(cargo_args)
+        .stdout(Stdio::piped());
+    let stdout = run_capture(&mut cmd)?;
+
+    let (mut elf, mut out_dirs) = (None, Vec::new());
+    for line in stdout.lines() {
+        let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        match msg["reason"].as_str() {
+            Some("compiler-artifact") if msg["target"]["name"] == FIRMWARE_BIN => {
+                if let Some(exe) = msg["executable"].as_str() {
+                    elf = Some((msg["package_id"].clone(), PathBuf::from(exe)));
+                }
+            }
+            Some("build-script-executed") => {
+                if let Some(dir) = msg["out_dir"].as_str() {
+                    out_dirs.push((msg["package_id"].clone(), PathBuf::from(dir)));
+                }
+            }
+            _ => {}
+        }
+    }
+    let (package, elf) = elf.ok_or("cargo did not report the firmware executable")?;
+    let out_dir = out_dirs
+        .into_iter()
+        .find(|(p, _)| *p == package)
+        .map(|(_, d)| d)
+        .ok_or("cargo did not report the firmware's build script output")?;
+    let firmware = Firmware {
+        elf,
+        map: out_dir.join(MAP_FILE),
+    };
+    check_placement(&firmware.map, &firmware.elf)?;
+    Ok(firmware)
 }
 
 fn check_placement(map: &Path, elf: &Path) -> Result {
@@ -189,30 +234,26 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-fn profile_dir(release: bool) -> PathBuf {
-    let target =
-        env::var_os("CARGO_TARGET_DIR").map_or_else(|| root().join("target"), |d| root().join(d));
-    target
-        .join(FIRMWARE_TARGET)
-        .join(if release { "release" } else { "debug" })
-}
-
-fn elf_path(release: bool) -> PathBuf {
-    profile_dir(release).join(FIRMWARE_BIN)
-}
-
-/// Where app/build.rs tells the linker to write the map.
-fn map_path(release: bool) -> PathBuf {
-    profile_dir(release).join(format!("{FIRMWARE_BIN}.map"))
-}
-
 /// `cargo`, the same binary that is running this xtask when there is one.
 fn cargo() -> Command {
     Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
 }
 
-/// Print and run `cmd` in the workspace root; error if it fails.
-fn run(cmd: &mut Command) -> Result {
+/// Like `run`, but returns the captured stdout (stdout must be piped).
+fn run_capture(cmd: &mut Command) -> Result<String> {
+    let shown = prepare(cmd);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("cannot run `{shown}`: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("`{shown}` failed ({})", output.status));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("`{shown}`: {e}"))
+}
+
+/// Set the working directory to the workspace root, print the command, and
+/// return it as shown.
+fn prepare(cmd: &mut Command) -> String {
     cmd.current_dir(root());
     // Show `cargo`, not the full toolchain path in $CARGO.
     let program = Path::new(cmd.get_program())
@@ -224,12 +265,5 @@ fn run(cmd: &mut Command) -> Result {
         .collect::<Vec<_>>()
         .join(" ");
     eprintln!("$ {shown}");
-    let status = cmd
-        .status()
-        .map_err(|e| format!("cannot run `{shown}`: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("`{shown}` failed ({status})"))
-    }
+    shown
 }
