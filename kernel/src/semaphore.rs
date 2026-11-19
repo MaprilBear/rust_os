@@ -11,8 +11,10 @@
 //! do this on its own: it cannot emit a second static into a different link
 //! section. The macro can, and each expansion gets its own static.
 //!
-//!     static TX_DONE: userlib::Semaphore = kernel::semaphore!(0);
-//!     pub static UARTE0: Uarte = Uarte::new(BASE, semaphore!(1), semaphore!(0));
+//! ```ignore
+//! static TX_DONE: userlib::Semaphore = kernel::semaphore!(0);
+//! pub static UARTE0: Uarte = Uarte::new(BASE, semaphore!(1), semaphore!(0));
+//! ```
 //!
 //! The macro expands in the *calling* crate, so `KOBJ` is not part of the kernel
 //! crate's object code. link.ld still puts it in kernel RAM because it matches
