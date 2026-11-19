@@ -63,7 +63,8 @@ pub struct TCB {
     sleep_ms: u32,
 }
 
-type ThreadId = usize;
+/// Identifies a thread (its slot in the scheduler's thread list).
+pub type ThreadId = usize;
 
 /// One SysTick period: advance sleep timers and request a reschedule.
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no SysTick
@@ -73,7 +74,7 @@ pub(crate) fn os_tick() {
 }
 
 pub type ThreadEntry = extern "C" fn() -> !;
-fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
+fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) -> ThreadId {
     // Threads run unprivileged, so their code must be in user flash.
     assert!(
         is_user_text(thread_entry as usize),
@@ -101,7 +102,7 @@ fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
             stack_layout: layout,
             state: ThreadState::Ready,
             sleep_ms: 0,
-        });
+        })
     }
 }
 
@@ -113,9 +114,10 @@ fn os_init() {
 }
 
 /// Register a thread. Call only from `user_main` (privileged, before the
-/// scheduler starts). `priority` 0 is highest, 7 is the idle thread's.
-pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
-    create_tcb(thread_entry, stack_size, priority);
+/// scheduler starts). `priority` 0 is highest, 7 is the idle thread's. Returns
+/// the new thread's id.
+pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) -> ThreadId {
+    create_tcb(thread_entry, stack_size, priority)
 }
 
 /// Kernel-internal yield. Handler mode only (SysTick, SVC, ISRs): PendSV has

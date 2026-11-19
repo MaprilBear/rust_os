@@ -13,7 +13,8 @@ pub static mut NEXT_TCB: *mut TCB = ptr::null_mut();
 
 pub trait Scheduler {
     fn schedule(&mut self);
-    fn add_thread(&mut self, thread: TCB);
+    /// Add a thread and return the id it was given.
+    fn add_thread(&mut self, thread: TCB) -> ThreadId;
     #[allow(dead_code)]
     fn remove_thread(&mut self, thread: ThreadId);
     fn tick(&mut self);
@@ -83,12 +84,13 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
         });
     }
 
-    fn add_thread(&mut self, thread: TCB) {
+    fn add_thread(&mut self, thread: TCB) -> ThreadId {
         critical_section::with(|_| {
             let index = self.tcb_list.push(thread);
             self.tcb_list[index].as_mut().unwrap().id = index;
             self.policy.on_add(self.tcb_list[index].as_ref().unwrap());
-        });
+            index
+        })
     }
 
     fn current_thread(&self) -> Option<ThreadId> {
