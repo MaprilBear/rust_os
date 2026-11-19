@@ -8,25 +8,24 @@
 //! KFLASH/KRAM regions, which the MPU makes privileged-only. Unprivileged threads
 //! must never call into it directly: they use `userlib` (syscalls) instead.
 //!
-//! Boot is `reset::ResetHandler`, which calls the application's
+//! Boot is the reset handler in `arch/armv7m/reset.rs`, which calls the application's
 //! `#[no_mangle] extern "C" fn user_main()` to register threads and drivers.
 
 #[macro_use]
 pub mod debugcon;
 
-mod reset;
+mod arch;
 mod scheduler;
 pub mod semaphore;
 mod simple_list;
 mod syscall;
-mod vectors;
 
 extern crate alloc;
 
+pub use arch::{irq_attach, irq_enable, irq_set_priority, irq_unpend, Interrupt};
 pub use semaphore::give_from_isr;
-pub use vectors::{irq_attach, irq_enable, irq_set_priority, irq_unpend, Interrupt};
 
-use vectors::core_periph;
+use arch::core_periph;
 
 use bitfields::bitflag;
 use core::alloc::{GlobalAlloc, Layout};

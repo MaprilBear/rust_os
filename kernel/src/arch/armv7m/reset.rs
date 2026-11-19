@@ -3,7 +3,8 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use crate::{os_init, os_start, vectors::CORE_PERIPHERALS};
+use super::vectors::CORE_PERIPHERALS;
+use crate::{os_init, os_start};
 
 unsafe extern "C" {
     /// Provided by the application (`#[no_mangle] pub extern "C" fn user_main()`).

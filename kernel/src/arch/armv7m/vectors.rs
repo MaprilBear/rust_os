@@ -14,7 +14,7 @@ use core::arch::{asm, global_asm};
 use cortex_m::Peripherals;
 use userlib::Global;
 
-use crate::reset::ResetHandler;
+use super::reset::ResetHandler;
 use crate::SystickHandler;
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
