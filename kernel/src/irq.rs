@@ -4,7 +4,8 @@
 //! Portable: the vector table and `irq_dispatch`, which reads this table, live
 //! in `arch::armv7m`; NVIC register writes go through `arch`.
 
-use userlib::Global;
+use core::ptr;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::arch;
 
@@ -104,14 +105,20 @@ pub enum Interrupt {
     #[doc = "47 - SPIM3"]
     SPIM3 = 47,
 }
-/// Handlers registered by the application, indexed by IRQ number. Lives in kernel
-/// RAM, so only privileged code can change it.
-static IRQ_TABLE: Global<[Option<extern "C" fn()>; NUM_IRQS]> = Global::new([None; NUM_IRQS]);
+/// Handlers registered by the application, indexed by IRQ number (null: none).
+/// Lives in kernel RAM, so only privileged code can change it. Atomic, so the
+/// IRQ entry can read it without masking interrupts: `irq_attach` publishes
+/// with Release, readers load with Acquire.
+static IRQ_TABLE: [AtomicPtr<()>; NUM_IRQS] = [const { AtomicPtr::new(ptr::null_mut()) }; NUM_IRQS];
 
 /// The handler registered for IRQ line `irq`, if any. Called by the
 /// architecture's common IRQ entry.
 pub(crate) fn handler_for(irq: usize) -> Option<extern "C" fn()> {
-    unsafe { (*IRQ_TABLE.as_ptr()).get(irq).copied().flatten() }
+    let handler = IRQ_TABLE.get(irq)?.load(Ordering::Acquire);
+    // Safety: only `irq_attach` stores non-null values, and it stores
+    // `extern "C" fn()` pointers.
+    (!handler.is_null())
+        .then(|| unsafe { core::mem::transmute::<*mut (), extern "C" fn()>(handler) })
 }
 
 /// Route `irq` to `handler`. Call from `user_main` (privileged, before the
@@ -123,9 +130,7 @@ pub fn irq_attach(irq: Interrupt, handler: extern "C" fn()) {
         crate::is_user_text(handler as usize),
         "IRQ handler is not in user text"
     );
-    critical_section::with(|_| unsafe {
-        (*IRQ_TABLE.as_ptr())[irq as usize] = Some(handler);
-    });
+    IRQ_TABLE[irq as usize].store(handler as *mut (), Ordering::Release);
 }
 
 /// Set the NVIC priority of `irq` (nRF52840: the top 3 bits count, 0x00 is
@@ -138,9 +143,10 @@ pub fn irq_set_priority(irq: Interrupt, priority: u8) {
 /// attached (`irq_attach`): the interrupt would end up in the default handler,
 /// which spins forever.
 pub fn irq_enable(irq: Interrupt) {
-    let attached =
-        critical_section::with(|_| unsafe { (*IRQ_TABLE.as_ptr())[irq as usize].is_some() });
-    assert!(attached, "irq_enable before irq_attach");
+    assert!(
+        handler_for(irq as usize).is_some(),
+        "irq_enable before irq_attach"
+    );
     arch::nvic_enable(irq);
 }
 
