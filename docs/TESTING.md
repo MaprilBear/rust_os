@@ -266,6 +266,10 @@ in Renode (and, later, on the DK: step 8).
 | `kernel_syscalls` | `kernel.robot` | Start from a thread, unknown numbers, forged semaphore handles, `DebugWrite`/`ExpectFault` pointer checks |
 | `kernel_mpu` | `kernel.robot` | MemManage (data or instruction, as expected) on reading/writing kernel RAM and flash at their edges, forging a semaphore object, reading kernel flash, executing kernel code, writing flash and the vector table, executing from RAM, the debug console; user RAM, flash and peripherals stay accessible |
 | `kernel_fpu` | `kernel.robot` (`known-issue`) | floating point in threads (known issue 18) |
+| `driver_uarte` | `drivers.robot` | TX (Robot reads UART0), two threads' sends all arrive whole, five lines each (without the TX lock a line is lost: Renode sends a DMA buffer at once, and an ENDTX wake-up reaches the wrong sender), RX of bytes Robot types, a short read leaves the rest queued |
+| `driver_timer` | `drivers.robot` | TIMER counter mode through the register map; `regs_semaphore` serialising two threads on a peripheral register (a smoke test of the lock in a driver static) |
+| `driver_ppi` | `drivers.robot` | an EGU event routed to a TIMER task by PPI, and none once the channel is off |
+| `driver_known_issues` | `drivers.robot` (`known-issue`) | two timers locked at once deadlock (known issue 3) |
 
 Unprivileged access to the System Control Space (NVIC, SysTick, MPU) is a
 BusFault on hardware, which escalates to HardFault and stops the system, so
@@ -284,9 +288,22 @@ speeds also show known issue 11: with the runner preempting every other tick,
 round robin keeps restarting at the head of a level, so `kernel_sched`'s
 equal-priority test logs `aaabbb`.
 
-A Robot test of an open known issue is tagged `known-issue`.
-`cargo xtask test-renode` leaves those out; run them with
-`cargo xtask test-renode -- --include known-issue`.
+A Robot test of an open known issue is tagged `known-issue`, and one that
+needs hardware Renode does not model is tagged `dk-only`.
+`cargo xtask test-renode` leaves both out; run them with
+`cargo xtask test-renode -- --include known-issue` (or `dk-only`).
+
+Renode differences that shape these suites: the routed PPI task write
+happens at the next synchronisation point (so `driver_ppi` sleeps 1 ms after
+each event); the TIMER model ignores BITMODE and the COMPARE->CLEAR shortcut,
+and a compare reached through COUNT in counter mode is not routed by PPI.
+Some UARTE behaviour only the host tests see: the ENDTX interrupt disabling
+itself, and the RX handler re-arming the right buffer (Renode stores each
+byte at once). Fast RX input is issue 20.
+
+A test that fails inside a driver lock (`regs_semaphore.with(..)`) leaves the
+lock held by its parked thread, which blocks every later test that needs it:
+read inside the lock, assert outside.
 
 ### Writing a target test
 
@@ -429,7 +446,7 @@ approval.
 3. [x] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
 4. [x] `ktest` harness and runner, in Renode
 5. [x] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
-6. [ ] Driver suites (host + target) (host part done)
+6. [x] Driver suites (host + target)
 7. [ ] On-target stress fuzzing
 8. [ ] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT)
 9. [ ] CI (GitHub Actions, using the Dockerfile)
@@ -450,8 +467,10 @@ test before it is fixed. The tag says where that test can run.
    instance one kernel object: `UARTE0` and `UARTE1` share both semaphores
    (the map's `.ksem` holds only two `Uarte::new::KOBJ` objects), and the
    timers would share one.
-4. **[target]** `Uarte::receive` takes no lock, but its FIFO is single-consumer:
-   two threads calling it race inside `pop`.
+4. **[target, stress]** `Uarte::receive` takes no lock, but its FIFO is single-consumer:
+   two threads calling it race inside `pop`. The race needs a preemption
+   between `pop`'s load and store of `tail`, so a single run rarely shows
+   it: it belongs in the stress tests (step 7).
 5. **[host]** `Timer` and `Ppi` expose `pub regs`, which bypasses their
    `regs_semaphore`, contrary to their `Sync` justification.
 6. **[DK]** UARTE TX from a flash buffer (e.g. the `"Bad input"` literal in

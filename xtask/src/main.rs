@@ -291,11 +291,12 @@ fn test_renode(args: &[String]) -> Result {
         .arg(format!("ELF:{}", firmware.elf.display()))
         .arg("--variable")
         .arg(format!("KTEST_DIR:{}", image_dir.display()));
-    // Robot tests of open known issues (docs/TESTING.md) fail by design; they
-    // run only when asked for, e.g. `-- --include known-issue`.
+    // Robot tests of open known issues (docs/TESTING.md) fail by design, and
+    // `dk-only` ones need hardware Renode does not model; they run only when
+    // asked for, e.g. `-- --include known-issue`.
     let includes = |a: &&String| *a == "-i" || a.starts_with("--include");
     if !renode_args.iter().any(includes) {
-        cmd.args(["--exclude", "known-issue"]);
+        cmd.args(["--exclude", "known-issue", "--exclude", "dk-only"]);
     }
     cmd.args(renode_args).args(&suites);
     eprintln!("(Robot reports: {})", results.display());
