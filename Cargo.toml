@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["kernel", "userlib", "drivers", "app"]
-# Host-only build tooling (`cargo xtask ...`, see .cargo/config.toml). Kept out
-# of the workspace so firmware builds (thumbv7em) never try to compile it.
-exclude = ["xtask"]
+# Host-only build tooling (`cargo xtask ...`, see .cargo/config.toml) and the
+# cargo-fuzz targets (nightly). Kept out of the workspace so firmware builds
+# (thumbv7em) never try to compile them.
+exclude = ["xtask", "fuzz"]
 default-members = ["app"]
 
 # Profiles only take effect at the workspace root.
