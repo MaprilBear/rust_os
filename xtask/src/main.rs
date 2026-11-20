@@ -79,6 +79,14 @@ const COMMANDS: &[Cmd] = &[
         run: test_renode,
     },
     Cmd {
+        name: "stress",
+        usage: "stress [--seeds <n>] [--first <seed>] [--mips <list>]\n    \
+                on-target stress in Renode (renode/tests/stress.robot) for seeds\n    \
+                first..first+n (default 1..=20) at each CPU speed in the comma list\n    \
+                (default `default,10,50`); prints every failing seed and speed",
+        run: stress,
+    },
+    Cmd {
         name: "test",
         usage: "test\n    test-host, test-loom, then test-renode",
         run: test_all,
@@ -301,6 +309,30 @@ fn test_renode(args: &[String]) -> Result {
     cmd.args(renode_args).args(&suites);
     eprintln!("(Robot reports: {})", results.display());
     run(&mut cmd)
+}
+
+fn stress(args: &[String]) -> Result {
+    let opts = Opts::parse(args, &[], &["--seeds", "--first", "--mips"])?;
+    let num = |name: &str, default: u32| -> Result<u32> {
+        opts.value(name).map_or(Ok(default), |v| {
+            v.parse().map_err(|e| format!("{name} {v}: {e}"))
+        })
+    };
+    let (n, first) = (num("--seeds", 20)?, num("--first", 1)?);
+    let last = first.checked_add(n).ok_or("--first + --seeds overflows")?;
+    let seeds: Vec<String> = (first..last).map(|s| s.to_string()).collect();
+    let mips = opts.value("--mips").unwrap_or("default,10,50");
+    test_renode(&[
+        "--".into(),
+        "--variable".into(),
+        format!("SEEDS:{}", seeds.join(",")),
+        "--variable".into(),
+        format!("MIPS_LIST:{mips}"),
+        root()
+            .join("renode/tests/stress.robot")
+            .display()
+            .to_string(),
+    ])
 }
 
 fn test_all(args: &[String]) -> Result {
