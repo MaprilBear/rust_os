@@ -9,8 +9,13 @@
   "workspaceFolder": "/work",
   "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind",
   "mounts": [
-    "source=nrf52840-cargo-home,target=/cargo-home,type=volume"
+    "source=nrf52840-cargo-home,target=/cargo-home,type=volume",
+    "source=nrf52840-claude-config,target=/home/dev/.claude,type=volume",
+    "source=nrf52840-gh-config,target=/home/dev/.config/gh,type=volume"
   ],
+  "containerEnv": {
+    "CLAUDE_CONFIG_DIR": "/home/dev/.claude"
+  },
   "customizations": {
     "vscode": {
       "extensions": [

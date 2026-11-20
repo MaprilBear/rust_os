@@ -628,7 +628,16 @@ Builds the development image, `nrf52840-os-dev`. It starts from `rust:1-trixie`
    directory anyone can write to. The dev container backs it with a persistent
    Docker volume (`nrf52840-cargo-home`).
 8. **A `dev` user (UID 1000):** the user the dev container runs as. VS Code
-   remaps its UID to match yours.
+   remaps its UID to match yours. It has passwordless `sudo`, so you can
+   `sudo apt-get update && sudo apt-get install <pkg>` inside the container.
+9. **Extra packages:** `.devcontainer/extra-packages.txt` lists additional apt
+   packages baked into the image by the last layer of the Dockerfile. Anything
+   installed with `sudo` at runtime is lost when the container is rebuilt; add
+   it to that file to keep it.
+10. **GitHub CLI (`gh`):** installed from GitHub's official apt repo (Debian's
+    package is much older).
+11. **`/home/dev/.claude` and `/home/dev/.config/gh`:** created owned by `dev`, as
+    the mount points for the Claude Code and `gh` login volumes (see below).
 
 ### `Makefile`
 
@@ -732,7 +741,8 @@ toolchain. See Step 10 for why that matters. Its settings:
 | `build.dockerfile` / `context` | Build the container from the repo's own `Dockerfile`, so the dev container and the Makefile use the same tools. |
 | `remoteUser: dev` + `updateRemoteUserUID` | Run as the non-root `dev` user, with its UID changed to match yours so files are not root-owned. |
 | `workspaceMount` / `workspaceFolder` | Mount your repo at `/work`, the same path the Makefile uses. |
-| `mounts` | Reuse the `nrf52840-cargo-home` Docker volume, so the Makefile and the dev container share one cargo cache. |
+| `mounts` | Reuse the `nrf52840-cargo-home` Docker volume, so the Makefile and the dev container share one cargo cache. Also mounts `nrf52840-claude-config` at `/home/dev/.claude`, so Claude Code conversations, settings and login survive container rebuilds. `nrf52840-gh-config` at `/home/dev/.config/gh` does the same for the `gh auth login` session. |
+| `containerEnv` | Sets `CLAUDE_CONFIG_DIR=/home/dev/.claude` so all Claude Code state (including what would otherwise be `~/.claude.json`) lives in that volume. |
 | `extensions` | Installs `rust-lang.rust-analyzer` and `tamasfe.even-better-toml` in the container. |
 | `rust-analyzer.cargo.target` | Analyze for `thumbv7em-none-eabihf`, not your PC. |
 | `rust-analyzer.cargo.allTargets` / `check.allTargets` = `false` | Skip test and bench targets. A `no_std` kernel has no test harness (it needs `std`), so analyzing them produces false errors like "can't find crate for `test`". |

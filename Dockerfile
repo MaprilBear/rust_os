@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
+        sudo \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Renode (portable Linux build, bundles the dotnet runtime) --------------
@@ -61,10 +62,54 @@ RUN rustup default stable \
 ENV CARGO_HOME=/cargo-home
 RUN mkdir -p /cargo-home && chmod 777 /cargo-home
 
+# --- GitHub CLI --------------------------------------------------------------
+# From GitHub's own apt repo: Debian's `gh` package lags well behind. The repo is
+# left configured, so `sudo apt-get update && sudo apt-get install --only-upgrade gh`
+# upgrades it later.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+    && wget -q https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+         -O /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+         > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && gh extension install github/gh-stack \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root user for the dev container (.devcontainer/devcontainer.json). VS Code
 # remaps its UID/GID to match yours, so files it creates are not root-owned.
 # The Makefile ignores this user and keeps using `docker run --user <your uid>`.
 RUN useradd --create-home --uid 1000 --shell /bin/bash dev
+
+# Passwordless sudo so you can `sudo apt-get install ...` inside the dev
+# container. This is a local, single-user dev image; do not publish it.
+RUN echo 'dev ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/dev \
+    && chmod 0440 /etc/sudoers.d/dev
+
+# Mount point for Claude Code state (conversations, settings, login). It is
+# created here, owned by `dev`, so the named volume that
+# .devcontainer/devcontainer.json mounts on it is initialised writable by `dev`
+# rather than root-owned.
+RUN mkdir -p /home/dev/.claude && chown dev:dev /home/dev/.claude
+
+# Same for the GitHub CLI's login (`gh auth login`). ~/.config is chowned too,
+# since mkdir -p would otherwise leave it root-owned.
+RUN mkdir -p /home/dev/.config/gh && chown -R dev:dev /home/dev/.config
+
+# --- Extra packages that survive image rebuilds -----------------------------
+# `sudo apt-get install` works at runtime but is lost when the container is
+# rebuilt. To keep a package, add it to .devcontainer/extra-packages.txt and
+# rebuild. This layer is last so editing the list does not re-run the slow steps
+# above.
+COPY .devcontainer/extra-packages.txt /tmp/extra-packages.txt
+RUN pkgs="$(grep -v '^[[:space:]]*#' /tmp/extra-packages.txt | xargs)" \
+    && if [ -n "$pkgs" ]; then \
+         apt-get update \
+         && apt-get install -y --no-install-recommends $pkgs \
+         && rm -rf /var/lib/apt/lists/*; \
+       fi \
+    && rm /tmp/extra-packages.txt
 
 WORKDIR /work
 CMD ["bash"]

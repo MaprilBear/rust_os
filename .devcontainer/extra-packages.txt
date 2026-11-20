@@ -1,0 +1,5 @@
+# Extra apt packages baked into the dev image, one or more per line.
+# Lines starting with # are ignored. Rebuild the dev container after editing.
+#
+# To try a package first: `sudo apt-get update && sudo apt-get install <pkg>`
+# in the container. Add it here once you want it to survive a rebuild.
