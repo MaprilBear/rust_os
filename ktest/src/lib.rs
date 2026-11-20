@@ -24,7 +24,8 @@
 //! privileged code, prints `KTEST ABORT` and stops the image.
 //!
 //! The seed for [`Rng`] comes from [`seed`]: the host may write it before the
-//! image starts (Renode: `sysbus WriteDoubleWord` at the `KTEST_SEED` symbol).
+//! image starts (Renode: `sysbus WriteDoubleWord` at the `KTEST_SEED` symbol),
+//! or compile it in (`KTEST_SEED` in the environment of the build).
 #![no_std]
 
 use core::fmt::{self, Write};
@@ -77,14 +78,18 @@ macro_rules! tests {
 pub static mut KTEST_SEED: [u32; 2] = [0; 2];
 const SEED_MAGIC: u32 = 0x5EED_5EED;
 
-/// The seed for this run (never 0).
+/// The seed for this run (never 0): the one the host wrote into
+/// `KTEST_SEED`, else the one compiled in (`KTEST_SEED` in the build
+/// environment, as `cargo xtask test-hw --seed` sets it), else 1.
 pub fn seed() -> u32 {
     let [magic, seed] = unsafe { core::ptr::read_volatile(&raw const KTEST_SEED) };
     if magic == SEED_MAGIC && seed != 0 {
-        seed
-    } else {
-        1
+        return seed;
     }
+    option_env!("KTEST_SEED")
+        .and_then(|s| s.parse().ok())
+        .filter(|&s| s != 0)
+        .unwrap_or(1)
 }
 
 /// xorshift32: small, and the same sequence on Renode and hardware.

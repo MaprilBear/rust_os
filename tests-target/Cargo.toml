@@ -14,6 +14,9 @@ autobins = true
 # The KTEST lines go to the debug console in Renode.
 default = ["debugcon"]
 debugcon = ["kernel/debugcon"]
+# Real hardware (`cargo xtask test-hw`): KTEST lines over RTT. Build with
+# --no-default-features.
+rtt = ["kernel/rtt"]
 
 [dependencies]
 kernel = { path = "../kernel", default-features = false, features = ["ktest"] }

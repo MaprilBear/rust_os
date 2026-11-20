@@ -21,6 +21,9 @@ extern crate std;
 #[cfg(all(target_os = "none", feature = "test-support"))]
 compile_error!("the `test-support` feature is for host builds only");
 
+#[cfg(all(feature = "debugcon", feature = "rtt"))]
+compile_error!("choose one console: `debugcon` (Renode) or `rtt` (hardware)");
+
 #[macro_use]
 pub mod debugcon;
 

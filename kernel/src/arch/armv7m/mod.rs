@@ -203,11 +203,46 @@ pub(crate) fn pend_context_switch() {
 }
 
 /// Send one byte to the debug console (`crate::debugcon`).
+#[cfg(not(feature = "rtt"))]
 pub(crate) fn log_putc(byte: u8) {
     /// Must match the address in `renode/nrf52840.repl`.
     const DEBUGCON: *mut u32 = 0x6000_0000 as *mut u32;
     // 32-bit write, because the Renode peripheral is a single 4-byte register.
     unsafe { DEBUGCON.write_volatile(byte as u32) }
+}
+
+/// The RTT up channel (feature `rtt`), once `init_console` has run. Kernel
+/// RAM: the probe reads it there, threads cannot.
+#[cfg(feature = "rtt")]
+static RTT: Global<Option<rtt_target::UpChannel>> = Global::new(None);
+
+/// Set up the console. RTT's control block lives in `.bss`, so call this
+/// after RAM is initialised; output before then is dropped.
+pub(crate) fn init_console() {
+    #[cfg(feature = "rtt")]
+    {
+        let channels = rtt_target::rtt_init! {
+            up: {
+                0: {
+                    size: 1024,
+                    mode: rtt_target::ChannelMode::BlockIfFull,
+                    name: "Terminal"
+                }
+            }
+        };
+        unsafe { *RTT.as_ptr() = Some(channels.up.0) };
+    }
+}
+
+/// Send one byte to the debug console (`crate::debugcon`), over RTT.
+#[cfg(feature = "rtt")]
+pub(crate) fn log_putc(byte: u8) {
+    // A fault handler may print over anything else: one writer at a time.
+    critical_section::with(|_| {
+        if let Some(ch) = unsafe { (*RTT.as_ptr()).as_mut() } {
+            ch.write(&[byte]);
+        }
+    });
 }
 
 /// Stop for good. Callers log why first; `_why` names the reason for readers
