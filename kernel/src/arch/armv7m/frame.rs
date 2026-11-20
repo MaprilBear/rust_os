@@ -39,3 +39,39 @@ pub(crate) fn init_stack(stack: &mut [u32], entry: usize) -> usize {
     stack[top - 1] = 1 << 24; // xPSR: Thumb state
     top - INITIAL_FRAME_WORDS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{init_stack, INITIAL_FRAME_WORDS};
+
+    #[test]
+    fn frame_sits_at_the_top_of_the_stack() {
+        let mut stack = [0u32; 64];
+        assert_eq!(init_stack(&mut stack, 0x1000), 64 - INITIAL_FRAME_WORDS);
+    }
+
+    #[test]
+    fn frame_holds_entry_lr_poison_and_thumb_xpsr() {
+        let mut stack = [0u32; 32];
+        init_stack(&mut stack, 0x0001_2340);
+        assert_eq!(stack[31], 1 << 24, "xPSR: only the Thumb bit");
+        assert_eq!(stack[30], 0x0001_2341, "PC: entry with the Thumb bit");
+        assert_eq!(stack[29], 0xFFFF_FFFF, "LR: poisoned");
+    }
+
+    #[test]
+    fn entry_with_thumb_bit_already_set_is_unchanged() {
+        let mut stack = [0u32; 32];
+        init_stack(&mut stack, 0x0001_2341);
+        assert_eq!(stack[30], 0x0001_2341);
+    }
+
+    #[test]
+    fn registers_r0_to_r12_and_the_rest_of_the_stack_are_untouched() {
+        let mut stack = [0xAAAA_AAAAu32; 40];
+        let sp = init_stack(&mut stack, 0x1000);
+        // r4-r11 (sp..sp+8), then r0-r3, r12 (sp+8..sp+13).
+        assert!(stack[sp..sp + 13].iter().all(|&w| w == 0xAAAA_AAAA));
+        assert!(stack[..sp].iter().all(|&w| w == 0xAAAA_AAAA));
+    }
+}
