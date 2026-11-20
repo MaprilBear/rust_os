@@ -152,15 +152,15 @@ execution: run `reverseExecMode true` in the Monitor before connecting, then use
 `renode/test.robot` uses Renode's Robot Framework integration:
 
 ```
-make test
+cargo xtask test-renode     # or `make test-renode` from outside the container
 ```
 
-It builds the machine, loads the ELF, attaches a terminal tester to UART0, runs
-the CPU, and waits up to 5 virtual seconds for the line `kernel booted`. It
-**fails until your kernel prints that line**, which makes it a handy first
-milestone. Add more tests by copying the test case and changing the expected
-output. Outputs (`log.html`, `report.html`, `robot_output.xml`) are written to the
-repo root and are git-ignored.
+It builds the machine, loads the ELF, runs the CPU, and waits up to 5 virtual
+seconds for the debug-console line `kernel booted`. `cargo xtask test-renode`
+builds the firmware, then runs every `renode/*.robot` and
+`renode/tests/**/*.robot` suite (or only the `.robot` files you pass after
+`--`) with the freshly built ELF as `${ELF}`. Outputs (`log.html`,
+`report.html`, `robot_output.xml`) are written to `target/renode-results/`.
 
 Useful keywords: `Wait For Line On Uart`, `Wait For Prompt On Uart`,
 `Write Line To Uart`, `Execute Command`, `Start Emulation`, `Pause Emulation`,

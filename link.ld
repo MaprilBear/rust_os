@@ -15,7 +15,7 @@
  *
  *   !! Needs crate boundaries to survive until link time: build with `lto = "off"`.
  *   !! With fat/thin LTO the whole program is one object, nothing matches, and
- *   !! the kernel silently lands in UFLASH/URAM.  tools/check_placement.py guards this.
+ *   !! the kernel silently lands in UFLASH/URAM.  `cargo xtask build` guards this.
  *
  * Kernel objects that must live in KRAM but are *declared by user code* (e.g.
  * semaphore!()) opt in by section name instead: #[link_section = ".ksem"].
