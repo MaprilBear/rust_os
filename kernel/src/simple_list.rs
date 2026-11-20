@@ -91,3 +91,140 @@ impl<T> IndexMut<usize> for SimpleList<T> {
         &mut self.data[index]
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SimpleList;
+    use std::vec::Vec;
+
+    fn items(list: &SimpleList<u32>) -> Vec<Option<u32>> {
+        list.iter().copied().collect()
+    }
+
+    #[test]
+    fn new_list_is_empty() {
+        let list = SimpleList::<u32>::new();
+        assert_eq!(list.len(), 0);
+        assert_eq!(list.slot_len(), 0);
+        assert_eq!(list.iter().count(), 0);
+    }
+
+    #[test]
+    fn push_appends_and_returns_the_index() {
+        let mut list = SimpleList::new();
+        assert_eq!(list.push(10), 0);
+        assert_eq!(list.push(11), 1);
+        assert_eq!(list.push(12), 2);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.slot_len(), 3);
+        assert_eq!(items(&list), [Some(10), Some(11), Some(12)]);
+    }
+
+    #[test]
+    fn remove_empties_the_slot_without_shifting() {
+        let mut list = SimpleList::new();
+        for v in [10, 11, 12] {
+            list.push(v);
+        }
+        list.remove(1);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.slot_len(), 3, "slots are never shrunk");
+        assert_eq!(items(&list), [Some(10), None, Some(12)]);
+        assert_eq!(list[2], Some(12), "later items keep their index");
+    }
+
+    #[test]
+    fn push_reuses_the_lowest_free_slot() {
+        let mut list = SimpleList::new();
+        for v in [10, 11, 12, 13] {
+            list.push(v);
+        }
+        list.remove(2);
+        list.remove(0);
+        assert_eq!(list.push(20), 0);
+        assert_eq!(list.push(21), 2);
+        assert_eq!(list.push(22), 4, "no free slot left: append");
+        assert_eq!(list.len(), 5);
+        assert_eq!(
+            items(&list),
+            [Some(20), Some(11), Some(21), Some(13), Some(22)]
+        );
+    }
+
+    #[test]
+    fn remove_out_of_range_does_nothing() {
+        let mut list = SimpleList::new();
+        list.push(10);
+        list.remove(1);
+        list.remove(usize::MAX);
+        assert_eq!(list.len(), 1);
+        assert_eq!(items(&list), [Some(10)]);
+    }
+
+    /// Known issue 1: removing an already-empty slot still decrements
+    /// `length`. With one item left the count goes wrong silently; with none
+    /// it underflows (a panic with overflow checks).
+    #[test]
+    #[ignore = "known issue 1: SimpleList::remove on an empty slot decrements length"]
+    fn remove_of_an_empty_slot_keeps_the_count() {
+        let mut list = SimpleList::new();
+        list.push(10);
+        list.push(11);
+        list.remove(0);
+        list.remove(0);
+        assert_eq!(list.len(), 1);
+        list.remove(1);
+        list.remove(1);
+        assert_eq!(list.len(), 0);
+    }
+
+    #[test]
+    fn retain_drops_rejected_items_and_keeps_slots() {
+        let mut list = SimpleList::new();
+        for v in 0..6 {
+            list.push(v);
+        }
+        list.remove(3);
+        list.retain(|v| *v % 2 == 0);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list.slot_len(), 6);
+        assert_eq!(items(&list), [Some(0), None, Some(2), None, Some(4), None]);
+    }
+
+    #[test]
+    fn retain_visits_only_occupied_slots_and_can_mutate_them() {
+        let mut list = SimpleList::new();
+        for v in [1, 2, 3] {
+            list.push(v);
+        }
+        list.remove(1);
+        let mut seen = Vec::new();
+        list.retain(|v| {
+            seen.push(*v);
+            *v *= 10;
+            true
+        });
+        assert_eq!(seen, [1, 3]);
+        assert_eq!(items(&list), [Some(10), None, Some(30)]);
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn index_mut_writes_the_slot() {
+        let mut list = SimpleList::new();
+        list.push(1);
+        list[0] = Some(7);
+        assert_eq!(list[0], Some(7));
+        if let Some(v) = list[0].as_mut() {
+            *v += 1;
+        }
+        assert_eq!(list[0], Some(8));
+    }
+
+    #[test]
+    #[should_panic]
+    fn index_past_the_end_panics() {
+        let list = SimpleList::<u32>::new();
+        let _ = &list[0];
+    }
+}

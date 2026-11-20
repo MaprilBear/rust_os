@@ -118,6 +118,32 @@ What `kernel::test_support` gives you (its module docs have the details):
   and `set_uram_range` make address checks behave as on hardware (flash/URAM
   matter once a syscall takes a pointer).
 
+### What the host unit tests cover
+
+| Module | Tests |
+|---|---|
+| `simple_list` | push/remove/retain/index, slot reuse |
+| `arch/armv7m/frame` | initial exception frame (PC, LR poison, xPSR) |
+| `lib` | thread creation: ids, stack size rounding and alignment, saved SP, user-text check, idle thread |
+| `scheduler` | priority preemption, round robin within a level, idle fallback, sleep/tick timing, block/unblock, remove; both policies on their own |
+| `semaphore` | counting, blocking, FIFO wake-up, hand-off, preemption by a woken waiter, handle validation, boot callers, `give_from_isr` |
+| `syscall` | every syscall number from threads and boot, invalid numbers, `in_range`/`user_can_read`/`user_can_write` |
+| `irq` | IRQ numbers, attach/dispatch, enable/priority/unpend, lines above 31 |
+| `debugcon`, `test_support` | the log, and the test support itself (reset, bridge checks, `in_isr`) |
+| `userlib` | syscall numbers and wrappers, `Semaphore`, `Global` |
+
+### Tests for known issues
+
+A test for a [known issue](#known-issues-to-confirm-with-tests) asserts the
+correct behaviour and is marked `#[ignore = "known issue N: ..."]`, so the
+suite stays green until the fix lands. To see them fail:
+
+```
+cargo xtask test-host -- --ignored
+```
+
+The fix removes the `#[ignore]`.
+
 ### Driver tests
 
 Point an `Mmio` at a register block in host RAM and drive the driver's
@@ -233,7 +259,7 @@ approval.
 
 1. [x] Make kernel, userlib and drivers build and test on the host
    (`arch` layer, `test_support`), split out `drivers`, add `cargo xtask`.
-2. [ ] Kernel host unit tests
+2. [x] Kernel host unit tests
 3. [ ] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
 4. [ ] `ktest` harness and runner, in Renode
 5. [ ] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
@@ -251,8 +277,9 @@ test before it is fixed. The tag says where that test can run.
    a panic with overflow checks (debug, tests), a silent wrap in release.
 2. **[host]** `remove_thread` leaves the thread's id in the sleep list and in
    semaphore wait queues, and ids are reused, so the wrong thread can be woken.
-   Removing the running thread also leaves `CURR_TCB` dangling. (No caller
-   yet; matters for dynamic processes.)
+   Removing the running thread also leaves `CURR_TCB` dangling, and
+   `remove_thread` never frees the thread's stack. (No caller yet; matters
+   for dynamic processes.)
 3. **[host]** `semaphore!` inside the `const fn` constructors gives every
    instance one kernel object: `UARTE0` and `UARTE1` share both semaphores
    (the map's `.ksem` holds only two `Uarte::new::KOBJ` objects), and the
@@ -280,3 +307,16 @@ test before it is fixed. The tag says where that test can run.
     `NEXT_TCB` and stores `CURR_TCB` twice. The `Interrupt` enum and
     `NUM_IRQS` are nRF52840 data in the portable `irq.rs`. `cargo xtask` must
     run from the repository root.
+11. **[host]** `PriorityPolicy::pick_next` restarts a level's round robin at
+    its first thread whenever the previous thread ran at another level. A
+    higher-priority thread that wakes every tick hands the CPU back to the
+    same lower-priority thread each time, and its peers starve.
+12. **[host]** An invalid syscall number returns 0, which callers read as
+    success; other failures return 1.
+13. **[host]** `os_add_thread` with a priority above 7 panics on an
+    out-of-bounds index in the policy, after the TCB was added to the thread
+    list, so a half-added thread remains. It should be rejected up front with
+    a clear message.
+19. **[host]** A semaphore `give` wakes the oldest waiter; it should wake the
+    highest-priority one (FIFO among equal priorities). Tests that rely on
+    the order use waiters of equal priority until it is fixed.

@@ -143,3 +143,120 @@ extern "C" fn pick_next_thread() {
 pub fn os_get_frc() -> u32 {
     arch::frc()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::scheduler::scheduler;
+    use crate::test_support::*;
+    use crate::ThreadState;
+
+    /// The TCB fields `create_tcb` fills in, for thread `id`.
+    fn stack_of(id: crate::ThreadId) -> (usize, usize, usize) {
+        let tcb = unsafe { scheduler().tcb(id) }.expect("no such thread");
+        (
+            tcb.stack_base as usize,
+            tcb.stack_layout.size(),
+            tcb.sp as usize,
+        )
+    }
+
+    #[test]
+    fn threads_get_sequential_ids_and_start_ready() {
+        let _k = lock();
+        let a = spawn(3);
+        let b = spawn(1);
+        assert_eq!((a, b), (0, 1));
+        assert_eq!(thread_state(a), Some(ThreadState::Ready));
+        assert_eq!(thread_state(b), Some(ThreadState::Ready));
+        let prio = |id| unsafe { scheduler().tcb(id) }.unwrap().priority;
+        assert_eq!((prio(a), prio(b)), (3, 1));
+    }
+
+    #[test]
+    fn stack_size_is_rounded_down_to_even_words_with_a_32_word_minimum() {
+        let _k = lock();
+        let cases = [(64, 64), (65, 64), (33, 32), (31, 32), (1, 32), (0, 32)];
+        for (asked, words) in cases {
+            let id = spawn_with(dummy_entry, asked, 1);
+            let (base, size, _) = stack_of(id);
+            assert_eq!(size, words * 4, "{asked} words asked");
+            assert_eq!(base % 8, 0, "stack base is 8-byte aligned");
+        }
+    }
+
+    #[test]
+    fn saved_sp_points_at_the_initial_frame() {
+        let _k = lock();
+        // One cast, compared with itself: Rust (and Miri) do not promise that
+        // two casts of the same function give the same address.
+        let entry: crate::ThreadEntry = dummy_entry;
+        let id = spawn_with(entry, 64, 1);
+        let (base, size, sp) = stack_of(id);
+        assert_eq!(sp, base + size - 16 * 4);
+        assert_eq!((base + size) % 8, 0, "top of stack is 8-byte aligned");
+        // The PC slot (second word from the top) holds the entry point.
+        let pc = unsafe { *((base + size - 8) as *const u32) };
+        assert_eq!(pc, (entry as usize as u32) | 1);
+        // r0-r12 start at zero (the stack is zero-allocated).
+        let regs = unsafe { core::slice::from_raw_parts(sp as *const u32, 13) };
+        assert!(regs.iter().all(|&r| r == 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "thread entry is not in user text")]
+    fn thread_entry_outside_user_text_is_rejected() {
+        let _k = lock();
+        let entry = dummy_entry as crate::ThreadEntry as usize;
+        set_user_text_range(entry + 0x100..entry + 0x200);
+        spawn(1);
+    }
+
+    #[test]
+    fn user_text_check_ignores_the_thumb_bit() {
+        let _k = lock();
+        set_user_text_range(0x1000..0x2000);
+        assert!(crate::is_user_text(0x1000));
+        assert!(crate::is_user_text(0x1001));
+        assert!(crate::is_user_text(0x1FFF), "0x1FFE with the Thumb bit");
+        assert!(!crate::is_user_text(0x0FFF));
+        assert!(!crate::is_user_text(0x2000));
+        assert!(!crate::is_user_text(0x2001));
+    }
+
+    #[test]
+    fn boot_adds_the_idle_thread_at_priority_7() {
+        let _k = lock();
+        boot();
+        let tcb = unsafe { scheduler().tcb(0) }.expect("idle thread");
+        assert_eq!(tcb.priority, 7);
+        assert_eq!(tcb.stack_layout.size(), 1024 * 4);
+        assert_eq!(tcb.state, ThreadState::Ready);
+        assert_eq!(context_switch(), Some(0), "idle runs when nothing else can");
+    }
+
+    /// Known issue 13: priority 8+ panics on an out-of-bounds index in the
+    /// policy, after the TCB was already added, so a half-made thread stays.
+    #[test]
+    #[ignore = "known issue 13: priority above 7 leaves a half-added thread"]
+    fn priority_above_7_is_rejected_cleanly() {
+        let _k = lock();
+        let r = std::panic::catch_unwind(|| spawn(8));
+        let msg = r.expect_err("priority 8 must be rejected");
+        let msg = (msg.downcast_ref::<std::string::String>().cloned())
+            .or_else(|| {
+                msg.downcast_ref::<&str>()
+                    .map(|s| std::string::String::from(*s))
+            })
+            .unwrap_or_default();
+        assert!(msg.contains("priority"), "unclear message: {msg:?}");
+        assert_eq!(thread_state(0), None, "no thread was added");
+    }
+
+    #[test]
+    fn tick_requests_a_context_switch() {
+        let _k = lock();
+        assert!(!pendsv_pending());
+        tick();
+        assert!(pendsv_pending());
+    }
+}

@@ -163,3 +163,193 @@ pub(crate) fn reset() {
         slot.store(ptr::null_mut(), Ordering::Release);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::*;
+    use core::sync::atomic::AtomicUsize;
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    static IN_HANDLER: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn counting_handler() {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        if userlib::in_handler_mode() {
+            IN_HANDLER.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    extern "C" fn other_handler() {}
+
+    /// Every line the enum names (the nRF52840 has 43; the rest are reserved).
+    const ALL: [Interrupt; 43] = {
+        use Interrupt::*;
+        [
+            POWER_CLOCK,
+            RADIO,
+            UARTE0_UART0,
+            SPIM0_SPIS0_TWIM0_TWIS0_SPI0_TWI0,
+            SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1,
+            NFCT,
+            GPIOTE,
+            SAADC,
+            TIMER0,
+            TIMER1,
+            TIMER2,
+            RTC0,
+            TEMP,
+            RNG,
+            ECB,
+            CCM_AAR,
+            WDT,
+            RTC1,
+            QDEC,
+            COMP_LPCOMP,
+            SWI0_EGU0,
+            SWI1_EGU1,
+            SWI2_EGU2,
+            SWI3_EGU3,
+            SWI4_EGU4,
+            SWI5_EGU5,
+            TIMER3,
+            TIMER4,
+            PWM0,
+            PDM,
+            MWU,
+            PWM1,
+            PWM2,
+            SPIM2_SPIS2_SPI2,
+            RTC2,
+            I2S,
+            FPU,
+            USBD,
+            UARTE1,
+            QSPI,
+            CRYPTOCELL,
+            PWM3,
+            SPIM3,
+        ]
+    };
+
+    #[test]
+    fn interrupt_numbers_fit_the_table_and_match_the_nrf52840() {
+        let mut seen = [false; NUM_IRQS];
+        for irq in &ALL {
+            let n = *irq as usize;
+            assert!(n < NUM_IRQS, "{irq:?}");
+            assert!(!seen[n], "{irq:?} duplicated");
+            seen[n] = true;
+        }
+        // Product specification, section "Instantiation".
+        assert_eq!(Interrupt::UARTE0_UART0 as u16, 2);
+        assert_eq!(Interrupt::TIMER0 as u16, 8);
+        assert_eq!(Interrupt::RTC0 as u16, 11);
+        assert_eq!(Interrupt::SWI0_EGU0 as u16, 20);
+        assert_eq!(Interrupt::UARTE1 as u16, 40);
+        assert_eq!(Interrupt::SPIM3 as u16, 47);
+        // Reserved lines on the nRF52840.
+        for n in [30, 31, 43, 44, 46] {
+            assert!(!seen[n], "IRQ {n} is reserved");
+        }
+    }
+
+    #[test]
+    fn attached_handler_runs_in_handler_mode() {
+        let _k = lock();
+        CALLS.store(0, Ordering::SeqCst);
+        IN_HANDLER.store(0, Ordering::SeqCst);
+        assert!(handler_for(Interrupt::TIMER1 as usize).is_none());
+        irq_attach(Interrupt::TIMER1, counting_handler);
+        raise_irq(Interrupt::TIMER1);
+        raise_irq(Interrupt::TIMER1);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(IN_HANDLER.load(Ordering::SeqCst), 2);
+        assert!(!userlib::in_handler_mode(), "thread mode afterwards");
+    }
+
+    #[test]
+    fn attach_replaces_the_previous_handler() {
+        let _k = lock();
+        // One cast, compared with itself (see saved_sp_points_at_the_initial_frame).
+        let handler: extern "C" fn() = counting_handler;
+        irq_attach(Interrupt::RTC0, other_handler);
+        irq_attach(Interrupt::RTC0, handler);
+        assert_eq!(
+            handler_for(Interrupt::RTC0 as usize).map(|h| h as usize),
+            Some(handler as usize)
+        );
+    }
+
+    #[test]
+    fn handlers_are_per_line() {
+        let _k = lock();
+        irq_attach(Interrupt::RTC0, counting_handler);
+        assert!(handler_for(Interrupt::RTC1 as usize).is_none());
+        assert!(handler_for(Interrupt::RTC0 as usize).is_some());
+    }
+
+    #[test]
+    fn lines_past_the_table_have_no_handler() {
+        let _k = lock();
+        assert!(handler_for(NUM_IRQS).is_none());
+        assert!(handler_for(usize::MAX).is_none());
+        // irq_dispatch computes (IPSR - 16) with wrapping: an exception below
+        // 16 must not alias a real line.
+        assert!(handler_for(0usize.wrapping_sub(16)).is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "IRQ handler is not in user text")]
+    fn handler_outside_user_text_is_rejected() {
+        let _k = lock();
+        let h = counting_handler as extern "C" fn() as usize;
+        set_user_text_range(h + 0x100..h + 0x200);
+        irq_attach(Interrupt::RTC0, counting_handler);
+    }
+
+    #[test]
+    #[should_panic(expected = "irq_enable before irq_attach")]
+    fn enable_before_attach_panics() {
+        let _k = lock();
+        irq_enable(Interrupt::TIMER0);
+    }
+
+    #[test]
+    fn enable_sets_only_that_line_including_lines_above_31() {
+        let _k = lock();
+        for irq in [Interrupt::UARTE0_UART0, Interrupt::UARTE1, Interrupt::SPIM3] {
+            irq_attach(irq, counting_handler);
+            irq_enable(irq);
+        }
+        for irq in &ALL {
+            let expect = matches!(
+                irq,
+                Interrupt::UARTE0_UART0 | Interrupt::UARTE1 | Interrupt::SPIM3
+            );
+            assert_eq!(nvic_is_enabled(*irq), expect, "{irq:?}");
+        }
+    }
+
+    #[test]
+    fn set_priority_and_unpend_reach_the_nvic() {
+        let _k = lock();
+        irq_set_priority(Interrupt::UARTE1, 0xC0);
+        assert_eq!(nvic_priority(Interrupt::UARTE1), 0xC0);
+        assert_eq!(nvic_priority(Interrupt::UARTE0_UART0), 0);
+        irq_unpend(Interrupt::UARTE1);
+        irq_unpend(Interrupt::UARTE1);
+        assert_eq!(nvic_unpend_count(Interrupt::UARTE1), 2);
+        assert_eq!(nvic_unpend_count(Interrupt::UARTE0_UART0), 0);
+    }
+
+    #[test]
+    fn lock_forgets_attached_handlers() {
+        {
+            let _k = lock();
+            irq_attach(Interrupt::QDEC, counting_handler);
+        }
+        let _k = lock();
+        assert!(handler_for(Interrupt::QDEC as usize).is_none());
+    }
+}

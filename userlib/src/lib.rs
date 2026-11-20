@@ -219,3 +219,126 @@ pub extern "C" fn idle_thread() -> ! {
         core::hint::spin_loop();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use super::*;
+    use std::sync::Mutex;
+    use std::vec::Vec;
+
+    /// The host syscall hook is global: serialise the tests that use it.
+    static HOOK: Mutex<()> = Mutex::new(());
+    static CALLS: Mutex<Vec<(u8, usize)>> = Mutex::new(Vec::new());
+
+    fn record(num: u8, arg: usize) -> usize {
+        CALLS.lock().unwrap().push((num, arg));
+        // Fail SemTake/SemGive on handle 0xBAD, succeed otherwise.
+        usize::from(arg == 0xBAD)
+    }
+
+    fn with_hook<R>(f: impl FnOnce() -> R) -> (R, Vec<(u8, usize)>) {
+        let _g = HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        CALLS.lock().unwrap().clear();
+        host::set_syscall_handler(Some(record));
+        let r = f();
+        host::set_syscall_handler(None);
+        (r, core::mem::take(&mut *CALLS.lock().unwrap()))
+    }
+
+    #[test]
+    fn syscall_numbers_round_trip() {
+        for s in [
+            Syscall::Start,
+            Syscall::Yield,
+            Syscall::Sleep,
+            Syscall::SemTake,
+            Syscall::SemGive,
+            Syscall::Fault,
+        ] {
+            assert_eq!(Syscall::try_from(s as u8), Ok(s));
+        }
+        assert_eq!(
+            (0..=255u8)
+                .filter(|&n| Syscall::try_from(n).is_ok())
+                .count(),
+            6
+        );
+        assert_eq!(Syscall::try_from(Syscall::Invalid as u8), Err(()));
+    }
+
+    #[test]
+    fn wrappers_pass_number_and_argument() {
+        let (_, calls) = with_hook(|| {
+            sys_yield();
+            sys_sleep(7);
+            sys_sleep(u32::MAX);
+            assert_eq!(sys_sem_take(0x2000_0010), 0);
+            assert_eq!(sys_sem_give(0x2000_0010), 0);
+            assert_eq!(sys_sem_take(0xBAD), 1, "the kernel's r0 comes back");
+        });
+        assert_eq!(
+            calls,
+            [
+                (Syscall::Yield as u8, 0),
+                (Syscall::Sleep as u8, 7),
+                (Syscall::Sleep as u8, u32::MAX as usize),
+                (Syscall::SemTake as u8, 0x2000_0010),
+                (Syscall::SemGive as u8, 0x2000_0010),
+                (Syscall::SemTake as u8, 0xBAD),
+            ]
+        );
+    }
+
+    #[test]
+    fn semaphore_handle_is_the_kernel_object_address() {
+        let sem = Semaphore::from_kernel_object(0x2000_0040 as *const ());
+        assert_eq!(sem.handle(), 0x2000_0040);
+        let (_, calls) = with_hook(|| sem.with(|| {}));
+        assert_eq!(
+            calls,
+            [
+                (Syscall::SemTake as u8, 0x2000_0040),
+                (Syscall::SemGive as u8, 0x2000_0040)
+            ]
+        );
+    }
+
+    #[test]
+    fn semaphore_methods_panic_when_the_kernel_rejects_the_handle() {
+        let sem = Semaphore::from_kernel_object(0xBAD as *const ());
+        let (r, _) = with_hook(|| {
+            let take = std::panic::catch_unwind(|| sem.take());
+            let give = std::panic::catch_unwind(|| sem.give());
+            (take.is_err(), give.is_err())
+        });
+        assert_eq!(r, (true, true));
+    }
+
+    #[test]
+    fn syscall_without_a_handler_panics() {
+        let _g = HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        host::set_syscall_handler(None);
+        let r = std::panic::catch_unwind(sys_yield);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn handler_mode_flag_is_settable() {
+        let _g = HOOK.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!in_handler_mode());
+        host::set_in_handler_mode(true);
+        assert!(in_handler_mode());
+        host::set_in_handler_mode(false);
+        assert!(!in_handler_mode());
+    }
+
+    #[test]
+    fn global_reads_and_writes_through_its_pointer() {
+        static G: Global<[u8; 4]> = Global::new([1, 2, 3, 4]);
+        assert_eq!(G.read(), [1, 2, 3, 4]);
+        unsafe { (*G.as_ptr())[2] = 9 };
+        assert_eq!(G.read(), [1, 2, 9, 4]);
+    }
+}

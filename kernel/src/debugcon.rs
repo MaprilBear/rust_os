@@ -66,3 +66,32 @@ macro_rules! dprintln {
         }
     };
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::*;
+
+    // The console is always compiled in on a host.
+    const _: () = assert!(super::ENABLED);
+
+    #[test]
+    fn dprint_and_dprintln_write_to_the_log() {
+        let _k = lock();
+        dprint!("a={} ", 1);
+        dprint!("{{braces}}");
+        dprintln!();
+        dprintln!("b={:#x}", 255);
+        assert_eq!(take_log(), "a=1 {braces}\nb=0xff\n");
+        assert_eq!(take_log(), "", "take_log drains");
+    }
+
+    #[test]
+    fn log_is_capped_at_64_kib() {
+        let _k = lock();
+        let line = [b'x'; 1023];
+        for _ in 0..70 {
+            dprintln!("{}", core::str::from_utf8(&line).unwrap());
+        }
+        assert_eq!(take_log().len(), 64 * 1024);
+    }
+}
