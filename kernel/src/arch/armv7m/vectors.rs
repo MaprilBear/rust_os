@@ -51,20 +51,20 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
     initial_sp: unsafe { &raw const _estack },
     reset: ResetHandler,
     exceptions: [
-        handler(default_handler),   // 2  NMI
-        handler(default_handler),   // 3  HardFault
-        handler(memmanage_handler), // 4  MemManage
-        handler(default_handler),   // 5  BusFault
-        handler(default_handler),   // 6  UsageFault
-        RESERVED,                   // 7
-        RESERVED,                   // 8
-        RESERVED,                   // 9
-        RESERVED,                   // 10
-        handler(SvcHandler),        // 11 SVCall
-        handler(default_handler),   // 12 DebugMonitor
-        RESERVED,                   // 13
-        handler(PendSVHandler),     // 14 PendSV
-        handler(systick_handler),   // 15 SysTick
+        handler(default_handler),  // 2  NMI
+        handler(default_handler),  // 3  HardFault
+        handler(MemManageHandler), // 4  MemManage
+        handler(default_handler),  // 5  BusFault
+        handler(default_handler),  // 6  UsageFault
+        RESERVED,                  // 7
+        RESERVED,                  // 8
+        RESERVED,                  // 9
+        RESERVED,                  // 10
+        handler(SvcHandler),       // 11 SVCall
+        handler(default_handler),  // 12 DebugMonitor
+        RESERVED,                  // 13
+        handler(PendSVHandler),    // 14 PendSV
+        handler(systick_handler),  // 15 SysTick
     ],
     irqs: [
         handler(irq_dispatch), // 0 POWER_CLOCK
@@ -138,11 +138,25 @@ extern "C" fn irq_dispatch() {
 // Handlers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Print why the system stops, as one line. With the `ktest` feature the line
+/// is `KTEST ABORT <why>`, which the on-target test runner looks for.
+fn report_fatal(why: core::fmt::Arguments) {
+    critical_section::with(|_| {
+        if cfg!(feature = "ktest") {
+            dprintln!("KTEST ABORT {}", why);
+        } else {
+            dprintln!("{}", why);
+        }
+    });
+}
+
 /// Placeholder for every exception and interrupt until you install real ones.
 /// Spinning here makes an unexpected fault easy to spot: pause the simulator
 /// and check `sysbus.cpu PC`.
 pub extern "C" fn default_handler() {
-    dprintln!("Exception!");
+    let ipsr: u32;
+    unsafe { asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };
+    report_fatal(format_args!("Exception! (exception {})", ipsr & 0x1FF));
     halt("unexpected exception");
 }
 
@@ -194,14 +208,49 @@ global_asm!(
     "bx lr",
 );
 
-pub extern "C" fn memmanage_handler() {
-    let cfsr = unsafe { core::ptr::read_volatile(0xE000_ED28 as *const u32) };
-    let mmfar = unsafe { core::ptr::read_volatile(0xE000_ED34 as *const u32) };
-    dprintln!("MemManage: CFSR={:#x} MMFAR={:#x}", cfsr, mmfar);
+// MemManage entry: hands EXC_RETURN (where the fault came from) to the Rust
+// handler. LR is untouched, so the handler's return is the exception return.
+global_asm!(
+    ".global MemManageHandler",
+    ".type MemManageHandler, %function",
+    ".thumb_func",
+    "MemManageHandler:",
+    "mov r0, lr",
+    "b memmanage_handler",
+);
+
+const CFSR: *mut u32 = 0xE000_ED28 as *mut u32;
+const MMFAR: *const u32 = 0xE000_ED34 as *const u32;
+
+#[no_mangle]
+extern "C" fn memmanage_handler(exc_return: u32) {
+    let cfsr = unsafe { CFSR.read_volatile() };
+    let mmfar = unsafe { MMFAR.read_volatile() };
+    // EXC_RETURN 0xFFFF_FFFD: thread mode on PSP, i.e. a thread's own access.
+    // A fault the thread announced (feature `ktest`) parks it instead.
+    if exc_return & 0xF == 0xD && crate::fault::on_thread_memfault(cfsr as u8) {
+        // MMFSR is write-one-to-clear: start the next fault from a clean slate.
+        unsafe { CFSR.write_volatile(cfsr & 0xFF) };
+        return;
+    }
+    // The faulting PC, from the frame the CPU stacked on PSP (r0 r1 r2 r3 r12
+    // LR PC xPSR). Only for faults in thread code: for a fault in handler mode
+    // the frame is on MSP, below this handler's own stack use (reported as 0).
+    let pc = if exc_return & 0x4 != 0 {
+        let psp = cortex_m::register::psp::read() as *const u32;
+        unsafe { psp.add(6).read_volatile() }
+    } else {
+        0
+    };
+    report_fatal(format_args!(
+        "MemManage: CFSR={:#x} MMFAR={:#x} PC={:#x}",
+        cfsr, mmfar, pc
+    ));
     halt("MemManage fault");
 }
 
 unsafe extern "C" {
     safe fn PendSVHandler();
     safe fn SvcHandler();
+    safe fn MemManageHandler();
 }

@@ -79,6 +79,7 @@ pub fn lock() -> KernelGuard {
     scheduler::reset();
     irq::reset();
     syscall::reset();
+    crate::fault::reset();
     userlib::host::set_in_handler_mode(false);
     userlib::host::set_syscall_handler(Some(syscall_bridge));
     *OWNER.lock().unwrap_or_else(|e| e.into_inner()) = Some(thread::current().id());
@@ -94,7 +95,7 @@ fn assert_owner() {
     );
 }
 
-fn syscall_bridge(num: u8, arg0: usize) -> usize {
+fn syscall_bridge(num: u8, arg0: usize, arg1: usize) -> usize {
     assert_owner();
     assert!(
         !userlib::in_handler_mode(),
@@ -105,15 +106,30 @@ fn syscall_bridge(num: u8, arg0: usize) -> usize {
         current().is_some(),
         "syscall {num} with no running thread: spawn() a thread and context_switch() first"
     );
-    syscall::dispatch(num, arg0, Caller::Thread)
+    syscall::dispatch(num, arg0, arg1, Caller::Thread)
 }
 
 /// Call the syscall dispatcher directly as `caller`, without the bridge's
 /// checks (e.g. to test what the kernel does with a syscall and no running
-/// thread).
+/// thread). r1 is 0; see [`dispatch2`].
 pub fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
+    dispatch2(num, arg0, 0, caller)
+}
+
+/// [`dispatch`] with both argument registers.
+pub fn dispatch2(num: u8, arg0: usize, arg1: usize, caller: Caller) -> usize {
     assert_owner();
-    syscall::dispatch(num, arg0, caller)
+    syscall::dispatch(num, arg0, arg1, caller)
+}
+
+/// Kernel feature `ktest`: what the MemManage handler does when the running
+/// thread takes a MemManage fault with status `mmfsr` (CFSR bits 0-7). True if
+/// the thread expected it (it is now parked); false if the handler would stop
+/// the system.
+#[cfg(feature = "ktest")]
+pub fn thread_memfault(mmfsr: u8) -> bool {
+    assert_owner();
+    in_isr(|| crate::fault::on_thread_memfault(mmfsr))
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

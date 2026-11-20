@@ -19,6 +19,11 @@ debugcon = []
 # fake-port inspection) to other crates' tests, e.g. `drivers`. The kernel's
 # own unit tests get it through cfg(test).
 test-support = []
+# On-target tests (ktest crate, tests-target images): a faulting thread is
+# parked instead of stopping the system, threads may announce an expected
+# MemManage fault (ExpectFault syscall), and fault handlers print
+# `KTEST ABORT` (src/fault.rs, arch/armv7m/vectors.rs).
+ktest = []
 
 [dependencies]
 userlib = { path = "../userlib" }

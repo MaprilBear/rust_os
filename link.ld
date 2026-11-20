@@ -135,8 +135,10 @@ SECTIONS
     _kram_size   = LENGTH(KRAM);
 
     /* Ranges the kernel uses to validate user pointers passed to syscalls. */
-    _flash_base  = ORIGIN(KFLASH);
-    _flash_size  = LENGTH(KFLASH) + LENGTH(UFLASH);
+    /* User flash only: kernel flash is privileged, so a syscall must not
+     * read it on a thread's behalf (e.g. DebugWrite). */
+    _flash_base  = ORIGIN(UFLASH);
+    _flash_size  = LENGTH(UFLASH);
     _uram_base   = ORIGIN(URAM);
     _uram_size   = LENGTH(URAM);
 

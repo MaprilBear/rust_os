@@ -5,8 +5,8 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering::SeqCst};
 
-/// Receives `(syscall number, r0)` and returns the new r0.
-pub type SyscallHandler = fn(u8, usize) -> usize;
+/// Receives `(syscall number, r0, r1)` and returns the new r0.
+pub type SyscallHandler = fn(u8, usize, usize) -> usize;
 
 /// The installed handler (null: none). Kept as a pointer, not an integer, so
 /// its provenance survives (Miri checks that).
@@ -18,7 +18,7 @@ pub fn set_syscall_handler(handler: Option<SyscallHandler>) {
     HANDLER.store(handler.map_or(ptr::null_mut(), |h| h as *mut ()), SeqCst);
 }
 
-pub(crate) fn syscall(num: u8, arg0: usize) -> usize {
+pub(crate) fn syscall(num: u8, arg0: usize, arg1: usize) -> usize {
     let handler = HANDLER.load(SeqCst);
     assert!(
         !handler.is_null(),
@@ -27,7 +27,7 @@ pub(crate) fn syscall(num: u8, arg0: usize) -> usize {
     // Safety: only `set_syscall_handler` stores non-null values, and it stores
     // `SyscallHandler`s.
     let handler = unsafe { core::mem::transmute::<*mut (), SyscallHandler>(handler) };
-    handler(num, arg0)
+    handler(num, arg0, arg1)
 }
 
 /// Make `in_handler_mode()` report an exception handler (true) or thread code.

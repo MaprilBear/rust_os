@@ -1,7 +1,7 @@
 //! System calls, kernel side.
 //!
-//! Threads run unprivileged and reach the kernel only through a syscall: one
-//! argument in, one return value out (r0 on the target). The arch layer
+//! Threads run unprivileged and reach the kernel only through a syscall: up to
+//! two arguments in, one return value out (r0-r1 and r0 on the target). The arch layer
 //! decodes the trap (`arch/armv7m/svc.rs`) and calls [`dispatch`].
 //!
 //! The user-side wrappers (`sys_*`) and the `Syscall` numbers live in `userlib`,
@@ -34,15 +34,16 @@ fn in_range(ptr: usize, len: usize, region: Range<usize>) -> bool {
 
 /// The kernel must not trust pointers from user code: the MPU does not stop a
 /// handler from dereferencing them.
-#[allow(dead_code)]
-fn user_can_read(ptr: usize, len: usize) -> bool {
+pub(crate) fn user_can_read(ptr: usize, len: usize) -> bool {
     in_range(ptr, len, arch::flash_range()) || user_can_write(ptr, len)
 }
 
-#[allow(dead_code)]
-fn user_can_write(ptr: usize, len: usize) -> bool {
+pub(crate) fn user_can_write(ptr: usize, len: usize) -> bool {
     in_range(ptr, len, arch::uram_range())
 }
+
+/// Longest buffer `DebugWrite` accepts.
+pub(crate) const DEBUG_WRITE_MAX: usize = 256;
 
 mod syscall_impl {
     use core::sync::atomic::Ordering;
@@ -55,13 +56,37 @@ mod syscall_impl {
     };
 
     /// The calling thread cannot continue (e.g. it panicked). There is no thread
-    /// teardown yet, so halt like the MemManage handler does.
-    pub(super) fn fault() -> ! {
+    /// teardown yet, so halt like the MemManage handler does; with the `ktest`
+    /// feature, park the thread so other tests go on (src/fault.rs).
+    pub(super) fn fault() -> usize {
         match unsafe { scheduler().current_thread() } {
-            Some(id) => dprintln!("thread {} faulted", id),
+            Some(id) => {
+                dprintln!("thread {} faulted", id);
+                #[cfg(feature = "ktest")]
+                {
+                    crate::fault::park_current();
+                    return 0;
+                }
+            }
             None => dprintln!("fault reported with no running thread"),
         }
         arch::halt("thread faulted")
+    }
+
+    /// Write a user buffer to the debug console as one unit: inside one
+    /// critical section, so no interrupt handler's output lands in the middle.
+    /// At most [`DEBUG_WRITE_MAX`] bytes, which bounds the time interrupts
+    /// are off.
+    pub(super) fn debug_write(ptr: usize, len: usize) -> usize {
+        if len > super::DEBUG_WRITE_MAX || !super::user_can_read(ptr, len) {
+            return 1;
+        }
+        if crate::debugcon::ENABLED {
+            // Checked above: readable by the caller, so it exists.
+            let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len) };
+            critical_section::with(|_| bytes.iter().for_each(|&b| arch::log_putc(b)));
+        }
+        0
     }
 
     pub(super) fn start(caller: Caller) -> usize {
@@ -114,10 +139,11 @@ mod syscall_impl {
     }
 }
 
-/// Run syscall number `num` with argument `arg0` for `caller` (the running
-/// thread, or the boot code). Returns the caller's return value.
+/// Run syscall number `num` with arguments `arg0`, `arg1` (r0, r1) for
+/// `caller` (the running thread, or the boot code). Returns the caller's
+/// return value.
 #[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: called by test support
-pub(crate) fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
+pub(crate) fn dispatch(num: u8, arg0: usize, arg1: usize, caller: Caller) -> usize {
     let syscall_num = Syscall::try_from(num).unwrap_or(Syscall::Invalid);
 
     match syscall_num {
@@ -127,6 +153,8 @@ pub(crate) fn dispatch(num: u8, arg0: usize, caller: Caller) -> usize {
         Syscall::SemTake => syscall_impl::sem_take(arg0),
         Syscall::SemGive => syscall_impl::sem_give(arg0),
         Syscall::Fault => syscall_impl::fault(),
+        Syscall::DebugWrite => syscall_impl::debug_write(arg0, arg1),
+        Syscall::ExpectFault => crate::fault::expect_fault(arg0, arg1),
         Syscall::Invalid => {
             dprintln!("Invalid SVC number {num}");
             0
@@ -151,7 +179,7 @@ mod tests {
     use std::string::String;
 
     fn call(num: Syscall, arg: usize, caller: Caller) -> usize {
-        dispatch(num as u8, arg, caller)
+        dispatch(num as u8, arg, 0, caller)
     }
 
     // Start /////////////////////////////////////////////////////////////////
@@ -236,6 +264,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "ktest"))]
     fn fault_from_a_thread_logs_its_id_and_halts() {
         let _k = lock();
         boot();
@@ -260,8 +289,8 @@ mod tests {
         boot();
         let t = spawn(1);
         context_switch();
-        for num in [6u8, 7, 100, 254, 255] {
-            dispatch(num, 0x1234, Caller::Thread);
+        for num in [8u8, 9, 100, 254, 255] {
+            dispatch(num, 0x1234, 0, Caller::Thread);
             assert_eq!(take_log(), std::format!("Invalid SVC number {num}\n"));
         }
         // (What it returns is known issue 12.)
@@ -278,8 +307,98 @@ mod tests {
         let _k = lock();
         boot();
         context_switch();
-        assert_eq!(dispatch(6, 0, Caller::Thread), 1);
-        assert_eq!(dispatch(255, 0, Caller::Thread), 1);
+        assert_eq!(dispatch(8, 0, 0, Caller::Thread), 1);
+        assert_eq!(dispatch(255, 0, 0, Caller::Thread), 1);
+    }
+
+    /// Feature `ktest`: a faulting thread is parked, the others go on.
+    #[test]
+    #[cfg(feature = "ktest")]
+    fn fault_from_a_thread_logs_its_id_and_parks_it() {
+        let _k = lock();
+        boot();
+        let t = spawn(1);
+        let other = spawn(2);
+        context_switch();
+        assert_eq!(call(Syscall::Fault, 0, Caller::Thread), 0);
+        assert_eq!(take_log(), std::format!("thread {t} faulted\n"));
+        assert_eq!(thread_state(t), Some(ThreadState::Blocked));
+        assert!(pendsv_pending());
+        assert_eq!(context_switch(), Some(other));
+        for _ in 0..5 {
+            tick();
+            context_switch();
+        }
+        assert_eq!(
+            thread_state(t),
+            Some(ThreadState::Blocked),
+            "parked for good"
+        );
+    }
+
+    // DebugWrite /////////////////////////////////////////////////////////////
+
+    /// Run as the running thread, with `buf` counted as user RAM.
+    fn debug_write(uram: &[u8], ptr: usize, len: usize) -> usize {
+        let start = uram.as_ptr() as usize;
+        set_uram_range(start..start + uram.len());
+        dispatch2(Syscall::DebugWrite as u8, ptr, len, Caller::Thread)
+    }
+
+    #[test]
+    fn debug_write_prints_a_user_buffer() {
+        let _k = lock();
+        let buf = *b"KTEST PASS x\n";
+        let p = buf.as_ptr() as usize;
+        assert_eq!(debug_write(&buf, p, buf.len()), 0);
+        assert_eq!(take_log(), "KTEST PASS x\n");
+        assert_eq!(debug_write(&buf, p + 6, 4), 0, "part of the buffer");
+        assert_eq!(take_log(), "PASS");
+        assert_eq!(debug_write(&buf, p, 0), 0, "nothing");
+        assert_eq!(take_log(), "");
+    }
+
+    #[test]
+    fn debug_write_accepts_at_most_256_bytes() {
+        let _k = lock();
+        let buf = [b'x'; 300];
+        let p = buf.as_ptr() as usize;
+        assert_eq!(debug_write(&buf, p, 256), 0);
+        assert_eq!(take_log().len(), 256);
+        assert_eq!(debug_write(&buf, p, 257), 1);
+        assert_eq!(take_log(), "");
+    }
+
+    #[test]
+    fn debug_write_reads_flash_too() {
+        let _k = lock();
+        static TEXT: &[u8] = b"from flash";
+        let p = TEXT.as_ptr() as usize;
+        set_flash_range(p..p + TEXT.len());
+        assert_eq!(
+            dispatch2(Syscall::DebugWrite as u8, p, TEXT.len(), Caller::Thread),
+            0
+        );
+        assert_eq!(take_log(), "from flash");
+    }
+
+    #[test]
+    fn debug_write_rejects_buffers_the_caller_cannot_read() {
+        let _k = lock();
+        let uram = [b'u'; 16];
+        let secret = [b's'; 16]; // stands in for kernel RAM
+        let u = uram.as_ptr() as usize;
+        for (ptr, len) in [
+            (secret.as_ptr() as usize, 16),
+            (u + 8, 9),          // runs off the end
+            (u - 1, 4),          // starts before
+            (u, usize::MAX),     // absurd length
+            (usize::MAX - 2, 4), // wraps
+            (0, 1),
+        ] {
+            assert_eq!(debug_write(&uram, ptr, len), 1, "{ptr:#x}+{len}");
+        }
+        assert_eq!(take_log(), "", "nothing printed");
     }
 
     // Pointer checks ////////////////////////////////////////////////////////
