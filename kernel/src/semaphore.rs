@@ -536,3 +536,41 @@ mod tests {
         assert!(waiters(&ONE).is_empty());
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::*;
+    use crate::test_support::*;
+    use proptest::prelude::*;
+
+    static OBJECTS: [KSemaphore; 4] = [const { KSemaphore::new(0) }; 4];
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: if cfg!(miri) { 8 } else { 256 },
+            failure_persistence: if cfg!(miri) {
+                None
+            } else {
+                proptest::prelude::ProptestConfig::default().failure_persistence
+            },
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// With `.ksem` set, a handle is accepted exactly when it is the
+        /// address of one of the objects in it.
+        #[test]
+        fn only_whole_objects_in_ksem_are_valid_handles(
+            offset in -64isize..(4 * size_of::<KSemaphore>() as isize + 64),
+        ) {
+            let _k = lock();
+            let start = OBJECTS.as_ptr() as usize;
+            let size = size_of::<KSemaphore>();
+            set_ksem_range(start..start + OBJECTS.len() * size);
+            let handle = start.wrapping_add_signed(offset);
+            let valid = offset >= 0
+                && (offset as usize) < OBJECTS.len() * size
+                && (offset as usize).is_multiple_of(size);
+            prop_assert_eq!(lookup(handle).is_some(), valid, "offset {}", offset);
+        }
+    }
+}
