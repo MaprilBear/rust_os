@@ -123,6 +123,15 @@ SECTIONS
         _eubss = .;
     } > URAM
 
+    /* Left alone by the boot code (neither copied nor zeroed): something
+     * outside the image may write it before the image starts, such as the
+     * ktest seed that Renode or a debugger sets (ktest/src/lib.rs). */
+    .uninit (NOLOAD) : ALIGN(4)
+    {
+        *(.uninit .uninit.*)
+        . = ALIGN(4);
+    } > URAM
+
     /* The rest of URAM is the user heap. Thread stacks (PSP) are carved out of
      * it by the kernel's second allocator, so they are unprivileged-accessible. */
     _suser_heap = ALIGN(8);

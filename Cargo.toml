@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kernel", "userlib", "drivers", "app"]
+members = ["kernel", "userlib", "drivers", "app", "ktest", "tests-target"]
 # Host-only build tooling (`cargo xtask ...`, see .cargo/config.toml) and the
 # cargo-fuzz targets (nightly). Kept out of the workspace so firmware builds
 # (thumbv7em) never try to compile them.
