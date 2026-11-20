@@ -162,7 +162,7 @@ pub(crate) fn start_systick() {
 
 /// Free-running counter (SysTick current value).
 pub(crate) fn frc() -> u32 {
-    core_periph().SYST.cvr.read()
+    cortex_m::peripheral::SYST::get_current()
 }
 
 unsafe impl InterruptNumber for Interrupt {
@@ -199,9 +199,7 @@ pub(crate) fn nvic_unpend(irq: Interrupt) {
 /// priority, so the switch happens when the active exception returns, and no
 /// barrier is needed.
 pub(crate) fn pend_context_switch() {
-    const ICSR: *mut u32 = 0xE000_ED04 as *mut u32;
-    const PENDSVSET: u32 = 1 << 28;
-    unsafe { ICSR.write_volatile(PENDSVSET) };
+    cortex_m::peripheral::SCB::set_pendsv();
 }
 
 /// Send one byte to the debug console (`crate::debugcon`).
