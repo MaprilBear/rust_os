@@ -399,11 +399,24 @@ object (from the linker's cross-reference table, `--cref`).
   known issue 9 (UB) or leak through known issue 2 are skipped the same way
   until those are fixed. Miri stops at the first UB, so look at one at a
   time: `cargo xtask miri -- --exact <test path> --include-ignored`.
-- **On-target stress**: N threads issuing random syscalls while a timer ISR
-  pends software interrupts that call `give_from_isr`; stack canaries and
-  invariant checks throughout. In Renode, sweep seeds and CPU quantum/MIPS to
-  shift interrupt timing. Virtual time is deterministic, so a seed reproduces a
-  failure.
+- **On-target stress (`tests-target/src/bin/stress_kernel.rs`,
+  `renode/tests/stress.robot`)**: four threads at priorities 2-4 issue random
+  syscalls (yield, sleep, a mutex section, a counting semaphore, taking and
+  giving a signal) while TIMER0, at a seed-chosen random period, pends a
+  software interrupt (EGU0) whose handler gives the same signal; both
+  interrupts are above SVCall's priority, so they land inside syscalls.
+  Checked throughout: no two threads in the mutex section, no more holders
+  than the counting semaphore allows, a canary on each thread's stack after
+  every syscall. At the end, after a drain: every semaphore is back to its
+  count, and the signal still holds every unit given and not taken (a lost
+  update blocks a final take and the test times out; with no non-blocking
+  take, an extra unit goes unnoticed). `cargo xtask test-renode`
+  runs seed 1; `cargo xtask stress [--seeds n] [--first s] [--mips list]`
+  sweeps seeds and CPU speeds (default 20 seeds at default, 10 and 50 MIPS)
+  in one Robot run and reports each failing pair. Virtual time is
+  deterministic, so a seed and speed reproduce a failure. (Making
+  `ksem_give` run outside its critical section was caught by 2 of the 18
+  runs of a 6-seed sweep, which is why the sweep exists.)
 
 Miri and cargo-fuzz need nightly. The dev container has it next to stable
 (stable stays the default toolchain), with the `miri` component and
@@ -447,7 +460,7 @@ approval.
 4. [x] `ktest` harness and runner, in Renode
 5. [x] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
 6. [x] Driver suites (host + target)
-7. [ ] On-target stress fuzzing
+7. [x] On-target stress fuzzing
 8. [ ] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT)
 9. [ ] CI (GitHub Actions, using the Dockerfile)
 
@@ -469,8 +482,8 @@ test before it is fixed. The tag says where that test can run.
    timers would share one.
 4. **[target, stress]** `Uarte::receive` takes no lock, but its FIFO is single-consumer:
    two threads calling it race inside `pop`. The race needs a preemption
-   between `pop`'s load and store of `tail`, so a single run rarely shows
-   it: it belongs in the stress tests (step 7).
+   between `pop`'s load and store of `tail`. A stress test (two readers, a
+   2000-byte typed stream) could not show it in Renode: see issue 20.
 5. **[host]** `Timer` and `Ppi` expose `pub regs`, which bypasses their
    `regs_semaphore`, contrary to their `Sync` justification.
 6. **[DK]** UARTE TX from a flash buffer (e.g. the `"Bad input"` literal in
@@ -527,3 +540,9 @@ test before it is fixed. The tag says where that test can run.
 19. **[host]** A semaphore `give` wakes the oldest waiter; it should wake the
     highest-priority one (FIFO among equal priorities). Tests that rely on
     the order use waiters of equal priority until it is fixed.
+20. **[DK]** Unverified: in Renode, a fast RX stream (2000 bytes typed at
+    once) overwrote the static that follows `UARTE0` with typed bytes, i.e.
+    RX DMA wrote past the driver's 1-byte buffers (`RXD.MAXCNT = 1`).
+    Hardware honours MAXCNT, so this is probably Renode's UARTE model,
+    perhaps together with issue 7's re-arming. Check on the DK; until then,
+    Renode tests type short inputs.
