@@ -290,13 +290,15 @@ impl Uarte {
         // Swap the receive buffers as the other fills up and push the received byte into the FIFO.
         if regs.endrx.generated() {
             regs.endrx.clear();
-            let current = regs.rxd.ptr.read() as *const u8;
-            let (done, next) = if current == self.rx_buffer_1.as_ptr() as *const u8 {
+            // Compare as the register holds them (32-bit), so this also runs
+            // in host tests, where addresses are wider.
+            let current = regs.rxd.ptr.read();
+            let (done, next) = if current == self.rx_buffer_1.as_ptr() as u32 {
                 (&self.rx_buffer_1, &self.rx_buffer_2)
-            } else if current == self.rx_buffer_2.as_ptr() as *const u8 {
+            } else if current == self.rx_buffer_2.as_ptr() as u32 {
                 (&self.rx_buffer_2, &self.rx_buffer_1)
             } else {
-                panic!("Unexpected RX buffer pointer: {:p}", current);
+                panic!("Unexpected RX buffer pointer: {:#x}", current);
             };
             let _ = self.rx_fifo.push(done.read()[0]);
             regs.rxd.ptr.write(next.as_ptr() as u32);
@@ -323,51 +325,59 @@ use userlib::Semaphore;
 /// (privileged, before the scheduler starts), after attaching `uarte0_handler`
 /// with `kernel::irq_attach`.
 pub fn uart_init() {
-    // Setup a basic non conflicting PSEL config (no RTS/CTS)
-    // TODO: Allow this to be user defined
-    let psel_rts = UartPselBuilder::new().with_disconnected(true).build();
-    let psel_cts = UartPselBuilder::new().with_disconnected(true).build();
-    let psel_txd = UartPselBuilder::new()
-        .with_disconnected(false)
-        .with_pin_num(0)
-        .with_port_num(0)
-        .build();
-    let psel_rxd = UartPselBuilder::new()
-        .with_disconnected(false)
-        .with_pin_num(1)
-        .with_port_num(0)
-        .build();
-    let regs = &*UARTE0.regs;
-    regs.psel_cts.write(psel_cts);
-    regs.psel_rts.write(psel_rts);
-    regs.psel_txd.write(psel_txd);
-    regs.psel_rxd.write(psel_rxd);
+    UARTE0.init(Interrupt::UARTE0_UART0);
+}
 
-    regs.baudrate.write(UartBaudRate::B115200);
+impl Uarte {
+    /// `uart_init` for this instance, whose interrupt line is `irq`. A method
+    /// so host tests can run it on an instance over fake registers.
+    fn init(&self, irq: Interrupt) {
+        // Setup a basic non conflicting PSEL config (no RTS/CTS)
+        // TODO: Allow this to be user defined
+        let psel_rts = UartPselBuilder::new().with_disconnected(true).build();
+        let psel_cts = UartPselBuilder::new().with_disconnected(true).build();
+        let psel_txd = UartPselBuilder::new()
+            .with_disconnected(false)
+            .with_pin_num(0)
+            .with_port_num(0)
+            .build();
+        let psel_rxd = UartPselBuilder::new()
+            .with_disconnected(false)
+            .with_pin_num(1)
+            .with_port_num(0)
+            .build();
+        let regs = &*self.regs;
+        regs.psel_cts.write(psel_cts);
+        regs.psel_rts.write(psel_rts);
+        regs.psel_txd.write(psel_txd);
+        regs.psel_rxd.write(psel_rxd);
 
-    let config = UartConfigBuilder::new()
-        .with_hardware_flow_control(true)
-        .with_parity(UartConfigParityFlag::None)
-        .with_stop_bits(UartConfigStopBitsFlag::One)
-        .build();
-    regs.config.write(config);
+        regs.baudrate.write(UartBaudRate::B115200);
 
-    let uart_enable = UartEnableBuilder::new().with_enable(true).build();
-    regs.enable.write(uart_enable);
+        let config = UartConfigBuilder::new()
+            .with_hardware_flow_control(true)
+            .with_parity(UartConfigParityFlag::None)
+            .with_stop_bits(UartConfigStopBitsFlag::One)
+            .build();
+        regs.config.write(config);
 
-    kernel::irq_set_priority(Interrupt::UARTE0_UART0, 0xC0);
-    // Enable interrupts for ENDRX to handle double buffer switching
-    regs.intenset
-        .write(UartInterruptBuilder::new().with_endrx(true).build());
+        let uart_enable = UartEnableBuilder::new().with_enable(true).build();
+        regs.enable.write(uart_enable);
 
-    // enable the interrupt in NVIC
-    kernel::irq_enable(Interrupt::UARTE0_UART0);
-    // begin the background RX process
-    regs.rxd.ptr.write(UARTE0.rx_buffer_1.as_ptr() as u32);
-    regs.rxd
-        .maxcnt
-        .write(Count16Builder::new().with_count(1).build());
-    regs.shorts
-        .write(UartShortsBuilder::new().with_endrx_startrx(true).build());
-    regs.start_rx.trigger();
+        kernel::irq_set_priority(irq, 0xC0);
+        // Enable interrupts for ENDRX to handle double buffer switching
+        regs.intenset
+            .write(UartInterruptBuilder::new().with_endrx(true).build());
+
+        // enable the interrupt in NVIC
+        kernel::irq_enable(irq);
+        // begin the background RX process
+        regs.rxd.ptr.write(self.rx_buffer_1.as_ptr() as u32);
+        regs.rxd
+            .maxcnt
+            .write(Count16Builder::new().with_count(1).build());
+        regs.shorts
+            .write(UartShortsBuilder::new().with_endrx_startrx(true).build());
+        regs.start_rx.trigger();
+    }
 }
