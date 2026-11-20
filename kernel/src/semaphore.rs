@@ -342,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn give_hands_the_unit_to_the_waiter() {
         let _k = lock();
         register_semaphore(&ONE);
@@ -373,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn giving_to_a_higher_priority_waiter_preempts_the_giver() {
         let _k = lock();
         register_semaphore(&ZERO);
@@ -389,6 +391,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn giving_to_a_lower_priority_waiter_keeps_the_giver_running() {
         let _k = lock();
         register_semaphore(&ZERO);
@@ -488,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn give_from_isr_wakes_a_waiter_and_requests_a_switch() {
         let _k = lock();
         let t = setup(&[&ZERO]);

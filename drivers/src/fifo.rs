@@ -273,7 +273,8 @@ mod tests {
     #[test]
     fn producer_and_consumer_threads_transfer_everything_in_order() {
         static F: Spsc = Spsc(Fifo::new(LockFreePolicy::new()));
-        const N: u32 = 100_000;
+        // Miri is ~100x slower; a few hundred items still wrap many times.
+        const N: u32 = if cfg!(miri) { 300 } else { 100_000 };
         let producer = std::thread::spawn(|| {
             for i in 0..N {
                 while F.0.push(i).is_err() {

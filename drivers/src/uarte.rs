@@ -708,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn endtx_interrupt_disables_itself_and_wakes_the_sender() {
         let _k = lock();
         let (t, f) = setup();

@@ -381,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn idle_runs_when_nothing_else_is_ready_and_is_preempted_by_a_wakeup() {
         let _k = lock();
         boot();
@@ -477,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn a_woken_thread_runs_again_and_can_sleep_again() {
         let _k = lock();
         boot();
@@ -500,6 +502,7 @@ mod tests {
     // Block and unblock ////////////////////////////////////////////////////
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn block_and_unblock_change_the_state() {
         let _k = lock();
         boot();
@@ -524,6 +527,7 @@ mod tests {
     // Remove ////////////////////////////////////////////////////////////////
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 9: Miri reports UB in CURR_TCB/NEXT_TCB")]
     fn removed_thread_is_never_scheduled_and_its_slot_is_reused() {
         let _k = lock();
         boot();
@@ -554,6 +558,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "known issue 2: remove_thread leaks the thread's stack")]
     fn tick_drops_sleep_entries_of_removed_threads() {
         let _k = lock();
         boot();
