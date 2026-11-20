@@ -1,0 +1,173 @@
+# CI for the firmware and its tests (docs/TESTING.md). Everything runs inside
+# the dev-container image (Dockerfile), so CI uses the same toolchains,
+# Renode and Robot as `make test` and the dev container.
+#
+# Every push and pull request: formatting, lints, host tests, loom, firmware
+# builds (debug and release, placement-checked) and the Renode suites.
+# Nightly and on demand: Miri, fuzzing and the on-target stress sweep, which
+# take longer (docs/TESTING.md, tier 3).
+
+name: CI
+
+on:
+  push:
+    branches: [main, test-suite]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Per event, so a nightly run and a push to the same branch never cancel each
+# other; only a newer push to a pull request cancels the older run.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: nrf52840-os-ci
+
+jobs:
+  checks:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the dev-container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The crate registry (the image's CARGO_HOME, mounted from here) and
+      # the build directory. The run id in the key saves a fresh copy each
+      # run (an exact hit never saves, and the stable toolchain moves on);
+      # restore-keys picks up the latest.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .ci-cargo-home
+            target
+          key: checks-${{ hashFiles('Cargo.lock', 'xtask/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            checks-${{ hashFiles('Cargo.lock', 'xtask/Cargo.lock', 'rust-toolchain.toml') }}-
+            checks-
+
+      - name: Set up the container command
+        run: |
+          mkdir -p .ci-cargo-home
+          echo "IN_IMAGE=docker run --rm -v $PWD:/work -v $PWD/.ci-cargo-home:/cargo-home -w /work $IMAGE" >> "$GITHUB_ENV"
+
+      - name: Formatting
+        run: $IN_IMAGE cargo xtask fmt --check
+
+      - name: Lints
+        run: $IN_IMAGE cargo xtask clippy -- -D warnings
+
+      - name: Host tests (kernel, userlib, drivers, xtask)
+        run: $IN_IMAGE cargo xtask test-host
+
+      - name: Loom
+        run: $IN_IMAGE cargo xtask test-loom
+
+      - name: Firmware, debug and release, placement-checked
+        run: |
+          $IN_IMAGE cargo xtask build
+          $IN_IMAGE cargo xtask build --release
+
+      - name: Renode suites
+        run: $IN_IMAGE cargo xtask test-renode
+
+      - name: Robot results as JUnit
+        if: always()
+        run: |
+          if [ -f target/renode-results/robot_output.xml ]; then
+            $IN_IMAGE rebot --xunit target/renode-results/junit.xml \
+              --output NONE --log NONE --report NONE \
+              target/renode-results/robot_output.xml || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: renode-results
+          path: target/renode-results
+          if-no-files-found: ignore
+
+  nightly:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the dev-container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          tags: ${{ env.IMAGE }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .ci-cargo-home
+            target
+            fuzz/target
+          key: nightly-${{ hashFiles('Cargo.lock', 'xtask/Cargo.lock', 'fuzz/Cargo.lock', 'rust-toolchain.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            nightly-${{ hashFiles('Cargo.lock', 'xtask/Cargo.lock', 'fuzz/Cargo.lock', 'rust-toolchain.toml') }}-
+            nightly-
+
+      # The fuzz corpus carries over between runs, so coverage builds up. It
+      # is saved explicitly (below), even when a step fails.
+      - uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Set up the container command
+        run: |
+          mkdir -p .ci-cargo-home
+          echo "IN_IMAGE=docker run --rm -v $PWD:/work -v $PWD/.ci-cargo-home:/cargo-home -w /work $IMAGE" >> "$GITHUB_ENV"
+
+      - name: Miri
+        run: $IN_IMAGE cargo xtask miri
+
+      # Each check runs even if an earlier one failed.
+      - name: Fuzz the syscall surface (10 minutes)
+        if: ${{ !cancelled() }}
+        run: $IN_IMAGE cargo xtask fuzz syscalls --time 600
+
+      - name: On-target stress sweep (20 seeds, 3 CPU speeds)
+        if: ${{ !cancelled() }}
+        run: $IN_IMAGE cargo xtask stress
+
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() }}
+        with:
+          path: fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nightly-failures
+          path: |
+            fuzz/artifacts
+            target/renode-results
+          if-no-files-found: ignore
