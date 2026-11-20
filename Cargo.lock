@@ -800,6 +800,7 @@ dependencies = [
 name = "tests-target"
 version = "0.1.0"
 dependencies = [
+ "drivers",
  "kernel",
  "ktest",
  "userlib",

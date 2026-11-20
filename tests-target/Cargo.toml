@@ -19,3 +19,4 @@ debugcon = ["kernel/debugcon"]
 kernel = { path = "../kernel", default-features = false, features = ["ktest"] }
 userlib = { path = "../userlib" }
 ktest = { path = "../ktest" }
+drivers = { path = "../drivers" }
