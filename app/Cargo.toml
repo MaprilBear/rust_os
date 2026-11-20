@@ -14,6 +14,8 @@ bench = false
 # build for real hardware with `cargo build --no-default-features`.
 default = ["debugcon"]
 debugcon = ["kernel/debugcon"]
+# The console over RTT, for real hardware (with --no-default-features).
+rtt = ["kernel/rtt"]
 
 [dependencies]
 kernel = { path = "../kernel", default-features = false }

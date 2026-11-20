@@ -184,8 +184,12 @@ pub unsafe fn mpu_init() {
 ///      is unprivileged forever and this function is never run again.
 #[no_mangle]
 pub extern "C" fn ResetHandler() -> ! {
+    // The RTT console's handle is a static, not valid before RAM is
+    // initialised (after a warm reset it may hold the previous image's).
+    #[cfg(not(feature = "rtt"))]
     dprintln!("entered reset");
     unsafe { initialize_memory() };
+    super::init_console();
     unsafe { mpu_init() };
     take_core_peripherals();
     os_init();

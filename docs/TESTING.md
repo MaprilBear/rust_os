@@ -30,6 +30,7 @@ cargo xtask test-loom     # tier 1, loom model checks (drivers, --cfg loom)
 cargo xtask miri          # tier 3, the host tests under Miri (nightly)
 cargo xtask fuzz          # tier 3, cargo-fuzz, 60 s of `syscalls` (nightly)
 cargo xtask test-renode   # tier 2 in Renode (renode/*.robot, renode/tests/)
+cargo xtask test-hw       # tier 2 on an nRF52840-DK (probe-rs, RTT)
 cargo xtask test          # test-host, test-loom and test-renode
 cargo xtask help          # everything else (build, check-placement, clippy, fmt)
 ```
@@ -246,15 +247,38 @@ in Renode (and, later, on the DK: step 8).
   and require `fail=0`; the log in Robot's report has every `KTEST` line.
   `renode/tests/ktest_selftest.robot` checks the harness itself against an
   image whose tests pass, fail, hang and fault on purpose.
-- **Transport**, by cargo feature: the debug console in Renode; RTT through
-  probe-rs on the DK (planned, step 8; it does not depend on the UART driver
-  under test). DK images build without `debugcon`, since a write to
-  0x6000_0000 bus-faults on real hardware. RTT must block when its buffer is
-  full (or the runner must attach before reset), otherwise early lines are
-  lost.
-- **Hardware** (planned): nRF52840-DK with its on-board debugger. UART tests use
-  the DK's USB serial port (P0.06 TX / P0.08 RX), which first needs
-  `uart_init`'s pins to be configurable.
+- **Transport**, by cargo feature: `debugcon` in Renode (the default), or
+  the kernel's `rtt` feature on hardware: the console is RTT up channel 0
+  (1 KiB, blocking when full, so nothing is lost before the probe attaches;
+  it does not depend on the UART driver under test). DK images build with
+  `--no-default-features --features rtt`, since a write to 0x6000_0000
+  bus-faults on real hardware. Nothing is printed before RAM is initialised
+  (`entered reset` is left out under `rtt`). The RTT data lives in kernel RAM;
+  the `rtt_target` crate's code is in user flash, like every non-kernel
+  crate, and only the kernel calls it. Blocking when full also means an `rtt`
+  build of the app stops once 1 KiB is printed if no probe reads it.
+- **Hardware** (`cargo xtask test-hw [--seed n] [--chip c] [--probe p]
+  [--timeout s] [-- <image>...]`, `xtask/src/hw.rs`): builds every
+  tests-target image for RTT with the seed compiled in (`KTEST_SEED`; no
+  debugger memory writes), then for each runs `probe-rs run
+  --no-catch-hardfault` (so the kernel's handler prints `KTEST ABORT`),
+  prints the KTEST lines and stops at `DONE`, `ABORT`, the timeout or
+  probe-rs exiting. `hw::IMAGES`
+  holds each image's expectation, as the Robot files do for Renode
+  (`ktest_selftest` must report exactly `pass=6 fail=8`; `kernel_fpu` and
+  `driver_known_issues` are skipped as known issues, and `driver_uarte`
+  because nothing drives the UART's other end yet). A unit test fails if an
+  image is missing from the table.
+  - Setup: an nRF52840-DK on USB (its on-board J-Link/CMSIS-DAP), probe-rs
+    (`cargo install --locked probe-rs-tools`; in the Dockerfile), and in the
+    dev container access to the probe's USB device (e.g. `--device` or a
+    udev rule on the host).
+  - Status: built and unit-tested, not yet run on a DK. The RTT transport
+    was checked in Renode by reading the RTT buffer out of emulated memory.
+  - Next: UART tests through the DK's USB serial port (P0.06 TX / P0.08 RX),
+    which first needs `uart_init`'s pins to be configurable (they are P0.00
+    and P0.01 today, the DK's 32 kHz crystal: issue 8); and DK-only tests for
+    issues 6, 7, 14, 16 and 20.
 
 ### Target suites
 
@@ -461,7 +485,7 @@ approval.
 5. [x] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
 6. [x] Driver suites (host + target)
 7. [x] On-target stress fuzzing
-8. [ ] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT)
+8. [x] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT); not yet run on a DK
 9. [ ] CI (GitHub Actions, using the Dockerfile)
 
 ## Known issues to confirm with tests
