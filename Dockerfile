@@ -57,6 +57,14 @@ RUN rustup default stable \
     && rustup component add rust-src llvm-tools clippy rustfmt rust-analyzer \
     && cargo install --locked cargo-binutils
 
+# Nightly next to stable (stable stays the default, see rust-toolchain.toml),
+# for Miri and cargo-fuzz: `cargo xtask miri`, `cargo xtask fuzz`. Pinned (a
+# nightly without Miri would break the build, and Miri's verdicts can change);
+# keep in sync with NIGHTLY in xtask/src/main.rs.
+RUN rustup toolchain install nightly-2026-11-19 --profile minimal \
+        --component miri,rust-src,llvm-tools \
+    && cargo install --locked cargo-fuzz
+
 # World-writable cargo home so the container can run as the host user
 # (avoids root-owned target/ directories on the host).
 ENV CARGO_HOME=/cargo-home
