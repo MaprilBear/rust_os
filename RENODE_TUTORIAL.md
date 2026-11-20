@@ -23,6 +23,10 @@ Your kernel is loaded as a plain ELF, the same binary you will flash later.
 Dockerfile              Rust + Renode 1.17.0 (portable) + QEMU + gdb-multiarch
 Makefile                all commands run inside the container as your user
 link.ld                 nRF52840 map: flash 1M @ 0x0, RAM 256K @ 0x20000000
+kernel/ userlib/        kernel and the syscall library for threads
+drivers/ app/           peripheral drivers and the firmware binary
+xtask/                  `cargo xtask`: build + placement check, test runners
+docs/TESTING.md         test framework and plan
 renode/
   nrf52840.repl         platform (stock nRF52840 + room for your additions)
   common.resc           create machine, load platform + ELF, show UART0
@@ -161,6 +165,7 @@ builds the firmware, then runs every `renode/*.robot` and
 `renode/tests/**/*.robot` suite (or only the `.robot` files you pass after
 `--`) with the freshly built ELF as `${ELF}`. Outputs (`log.html`,
 `report.html`, `robot_output.xml`) are written to `target/renode-results/`.
+See `docs/TESTING.md` for the overall test framework.
 
 Useful keywords: `Wait For Line On Uart`, `Wait For Prompt On Uart`,
 `Write Line To Uart`, `Execute Command`, `Start Emulation`, `Pause Emulation`,

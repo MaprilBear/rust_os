@@ -3,7 +3,7 @@
 # Registered in renode/nrf52840.repl at 0x60000000. Any 32-bit write to it
 # appends the low byte to a line buffer; on '\n' the line is printed to the
 # Renode log as `debugcon: <line>`. This does not exist on real hardware, so it
-# is only for debugging in the simulator (see src/debugcon.rs).
+# is only for debugging in the simulator (see kernel/src/debugcon.rs).
 #
 # `request` and `self` are provided by Renode. Variables set during IsInit
 # persist between calls.
