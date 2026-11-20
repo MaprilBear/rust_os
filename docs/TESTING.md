@@ -27,8 +27,10 @@ Run from the repository root (in the dev container):
 ```
 cargo xtask test-host     # tier 1
 cargo xtask test-loom     # tier 1, loom model checks (drivers, --cfg loom)
+cargo xtask miri          # tier 3, the host tests under Miri (nightly)
+cargo xtask fuzz          # tier 3, cargo-fuzz, 60 s of `syscalls` (nightly)
 cargo xtask test-renode   # tier 2 in Renode (today: renode/*.robot)
-cargo xtask test          # all of the above
+cargo xtask test          # test-host, test-loom and test-renode
 cargo xtask help          # everything else (build, check-placement, clippy, fmt)
 ```
 
@@ -58,12 +60,13 @@ drivers/                   peripheral drivers (library, host-testable)
 app/                       thin firmware binary: user_main + threads
 xtask/                     `cargo xtask` (build, placement check, test runners)
 renode/*.robot             Renode suites (run by `cargo xtask test-renode`)
+kernel/src/model_tests.rs  model-based tests of the scheduler and semaphores
+fuzz/                      cargo-fuzz targets (nightly, own workspace)
 
 planned:
 ktest/                     on-target test harness (no_std)
 tests-target/              one firmware image per target suite
 renode/tests/              Robot suites for those images
-fuzz/                      cargo-fuzz targets (nightly)
 ```
 
 ## Tier 1: host tests
@@ -225,28 +228,57 @@ tail-chaining, an ISR landing inside `schedule()`). That is tier 2/3's job.
   USB serial port (P0.06 TX / P0.08 RX), which first needs `uart_init`'s pins
   to be configurable.
 
-## Tier 3: fuzzing and stress (planned)
+## Tier 3: fuzzing and stress
 
-- **Model-based (host, proptest-state-machine)**: random sequences of
-  add/sleep/tick/take/give/schedule run against the real kernel and a
-  reference model. Invariants include: exactly one Running thread, the
-  highest-priority Ready thread is chosen, no thread is lost, semaphore counts
-  are conserved, waiters wake in FIFO order.
-- **Coverage-guided (host, cargo-fuzz)**: arbitrary syscall numbers, handles
-  and pointers into the dispatcher. The harness takes `test_support::lock()`
-  per input, sets the user RAM range to a host buffer (otherwise every pointer
-  is rejected and nothing is covered), and treats `Fault` (which halts by
-  design) and `Start` specially; for everything else the kernel must never
-  panic or corrupt state.
-- **Undefined behaviour (host, Miri)**: the host tests re-run under Miri.
+- **Model-based (host, proptest; `kernel/src/model_tests.rs`)**: random
+  sequences of yield/sleep/take/give from the running thread, ticks and
+  `give_from_isr` from interrupts, and context switches run against the real
+  kernel and a reference model side by side. Only sequences the hardware can
+  produce are generated: idle makes no syscalls, and a thread makes none once
+  its own syscall or a tick has requested a switch, but one may still slip in
+  after an interrupt above SVCall's priority requested it (late arrival).
+  After every step they must agree on every
+  thread's state, the current thread, the pending switch, and each
+  semaphore's count and wait queue; the invariants (one Running thread, a
+  highest-priority Ready thread chosen) are also checked on the kernel
+  directly. The model does not predict *which* equal-priority thread runs: it
+  checks the kernel picked a valid one and adopts it. Predicting it would mean
+  copying the round-robin policy, known issue 11 included, which is why this
+  is plain proptest rather than `proptest-state-machine`. One policy-free
+  rule is checked: a thread that yields while a Ready peer at its priority
+  exists hands the CPU to a peer.
+- **Property tests (host, proptest)**: `SimpleList` against a
+  `Vec<Option<T>>`, `in_range` against its definition in u128 arithmetic,
+  semaphore handle validation around `.ksem`, the initial thread frame, the
+  FIFO against a bounded `VecDeque`. They run with the other host tests.
+- **Coverage-guided (host, cargo-fuzz; `fuzz/fuzz_targets/syscalls.rs`)**:
+  arbitrary syscall numbers and arguments from the running thread
+  (semaphore handles valid, misaligned or outside `.ksem`, pointers into a
+  host buffer standing in for user RAM, raw integers), interleaved with
+  ticks, interrupt gives and switches. The harness takes
+  `test_support::lock()` per input, declares its semaphore array as `.ksem`
+  (so handles go through the real range/alignment check), sets the user RAM
+  range to the buffer (no syscall takes a pointer yet; `DebugWrite` will),
+  skips `Fault` (which halts by design), and checks the scheduler and
+  semaphore invariants after every step; anything else must never panic. `cargo xtask fuzz [<target>] [--time <s>]`; crashes
+  are saved in `fuzz/artifacts/`, replay one with
+  `cargo +nightly fuzz run --fuzz-dir fuzz syscalls <file>`.
+- **Undefined behaviour (host, Miri; `cargo xtask miri`)**: the host tests
+  of all three crates under Miri. Proptest tests use 8 cases and no
+  regression files under `cfg(miri)`; slow tests with no unsafe code are
+  skipped there (`#[cfg_attr(miri, ignore = ...)]`). Tests that run into
+  known issue 9 (UB) or leak through known issue 2 are skipped the same way
+  until those are fixed. Miri stops at the first UB, so look at one at a
+  time: `cargo xtask miri -- --exact <test path> --include-ignored`.
 - **On-target stress**: N threads issuing random syscalls while a timer ISR
   pends software interrupts that call `give_from_isr`; stack canaries and
   invariant checks throughout. In Renode, sweep seeds and CPU quantum/MIPS to
   shift interrupt timing. Virtual time is deterministic, so a seed reproduces a
   failure.
 
-Miri and cargo-fuzz need nightly. Step 3 adds it to the dev container next to
-stable (stable stays the default toolchain).
+Miri and cargo-fuzz need nightly. The dev container has it next to stable
+(stable stays the default toolchain), with the `miri` component and
+`cargo-fuzz`.
 
 ## The tools
 
@@ -282,7 +314,7 @@ approval.
 1. [x] Make kernel, userlib and drivers build and test on the host
    (`arch` layer, `test_support`), split out `drivers`, add `cargo xtask`.
 2. [x] Kernel host unit tests
-3. [ ] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
+3. [x] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
 4. [ ] `ktest` harness and runner, in Renode
 5. [ ] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
 6. [ ] Driver suites (host + target) (host part done)
@@ -321,8 +353,13 @@ test before it is fixed. The tag says where that test can run.
    (unverified effect; the comment says "no RTS/CTS"), and uses P0.00/P0.01,
    the 32 kHz crystal pins on the DK.
 9. **[Miri]** `CURR_TCB`/`NEXT_TCB` are raw pointers into the scheduler's
-   thread list while `scheduler()` hands out `&'static mut`; Stacked Borrows
-   will likely flag a second context switch.
+   thread list while `scheduler()` hands out `&'static mut`. Confirmed: Miri
+   reports UB under both Stacked and Tree Borrows. Under Stacked Borrows,
+   `NEXT_TCB` is derived from `&mut` to a list element and the next
+   `tcb_list[..].as_mut()` (a Unique retag of the whole buffer) invalidates
+   it; under Tree Borrows, a shared read of the list (`SimpleList::iter`)
+   freezes its tag and the next write through `CURR_TCB` is UB. The 11 tests
+   that reach it are skipped under Miri until it is fixed.
 10. **Cleanups (no failing test possible):** `Fifo::new` fills its buffer with
     `mem::zeroed()` inside a `const` block, which is a compile error (not UB)
     for types where all-zeroes is invalid; use `MaybeUninit<T>`. PendSV loads
