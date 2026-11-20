@@ -15,3 +15,5 @@ publish = false
 [dependencies]
 # Reads cargo's --message-format=json build messages.
 serde_json = "1"
+# Names in the linker map's cross-reference table (placement check).
+rustc-demangle = "0.1"

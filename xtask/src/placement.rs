@@ -9,7 +9,13 @@
 //!     LTO merges every crate into one object: the link "succeeds" but the whole
 //!     kernel is in user memory, or
 //!   * the map does not describe the ELF it is checked with (a stale map from
-//!     an older link would otherwise make the whole check meaningless).
+//!     an older link would otherwise make the whole check meaningless), or
+//!   * user code references a generic instantiated in the kernel crate (from
+//!     the map's cross-reference table, `--cref`). rustc shares generic
+//!     instances with downstream crates when optimising little (share-generics),
+//!     so e.g. `core::str::Bytes::into_iter` compiled for the kernel would be
+//!     reused by a user crate. That copy sits in KFLASH, and an unprivileged
+//!     thread that calls it takes a MemManage fault.
 //!
 //! Why a map file: the kernel crate also has #[no_mangle] symbols (`ResetHandler`,
 //! `CURR_TCB`, ...) whose names don't say which crate they came from, but the map
@@ -92,6 +98,69 @@ pub struct Report {
     pub out_sections: BTreeMap<String, (u64, u64)>,
 }
 
+/// Generic instances defined in a kernel-crate object and referenced from
+/// user code (see the module docs). Uses the `Cross Reference Table` lld adds
+/// to the map with `--cref`; a map without one is an error, since the check
+/// would silently pass.
+pub fn shared_generics(map: &str) -> Result<Vec<String>, String> {
+    let Some(start) = map.find("Cross Reference Table") else {
+        return Err(
+            "the linker map has no cross-reference table: link with --cref (see app/build.rs)"
+                .into(),
+        );
+    };
+    let mut found = Vec::new();
+    // Rows: `<symbol> <defining file>`, then `<indent> <referencing file>`.
+    // lld demangles the names, which may contain spaces; paths do not.
+    let mut current: Option<(&str, bool)> = None; // (symbol, defined in kernel)
+    let flag = |sym: &str, file: &str, found: &mut Vec<String>| {
+        let name = format!("{:#}", rustc_demangle::demangle(sym));
+        // The kernel's own items, and the allocator shims of its
+        // #[global_allocator] (the kernel heap is privileged by design).
+        let kernel_item = name.starts_with("kernel::")
+            || name.starts_with("<kernel::")
+            || name.starts_with("__rustc::");
+        if !kernel_item && !found.iter().any(|f: &String| f.starts_with(&name)) {
+            found.push(format!("{name} (used by {})", short(file)));
+        }
+    };
+    for line in map[start..].lines().skip(3) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (sym, file) = if line.starts_with(' ') {
+            (None, line.trim())
+        } else {
+            let Some((sym, file)) = line.trim_end().rsplit_once(' ') else {
+                continue;
+            };
+            (Some(sym.trim_end()), file)
+        };
+        match sym {
+            Some(sym) => current = Some((sym, is_kernel_file(file))),
+            None => {
+                let Some((sym, true)) = current else { continue };
+                // Only Rust paths (mangled, or demangled by lld):
+                // #[no_mangle] kernel symbols (ResetHandler, CURR_TCB, ...) are
+                // the kernel's own.
+                let rust = sym.starts_with("_R") || sym.starts_with("_ZN") || sym.contains("::");
+                if rust && !is_kernel_file(file) && !file.ends_with("symbols.o") {
+                    flag(sym, file, &mut found);
+                }
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// `.../libfoo-<hash>.rlib(...)` -> `foo`; `.../foo.<hash>.rcgu.o` -> `foo`.
+fn short(file: &str) -> &str {
+    let file = file.rsplit('/').next().unwrap_or(file);
+    let file = file.split(['(', '.']).next().unwrap_or(file);
+    let file = file.strip_prefix("lib").unwrap_or(file);
+    file.rsplit_once('-').map_or(file, |(name, _)| name)
+}
+
 pub fn check_map(map: &str) -> Report {
     let mut out: Option<&str> = None;
     let mut errors = Vec::new();
@@ -131,6 +200,16 @@ pub fn check_map(map: &str) -> Report {
         if out == ".text" && is_kernel {
             kernel_text_bytes += row.size;
         }
+    }
+
+    match shared_generics(map) {
+        Ok(found) => errors.extend(found.into_iter().map(|g| {
+            format!(
+                "user code calls a generic instantiated in the kernel crate (in KFLASH, \
+                 faults when a thread calls it): {g}"
+            )
+        })),
+        Err(e) => errors.push(e),
     }
 
     if kernel_text_bytes == 0 {

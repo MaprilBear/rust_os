@@ -22,4 +22,7 @@ fn main() {
         "cargo:rustc-link-arg-bins=-Map={}",
         out.join("rust_os.map").display()
     );
+    // A cross-reference table in the map (who references each symbol), for
+    // the placement check's shared-generics test.
+    println!("cargo:rustc-link-arg-bins=--cref");
 }

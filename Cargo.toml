@@ -22,6 +22,19 @@ incremental = true
 overflow-checks = true
 panic = "abort"
 
+# Keep the kernel's generic instances to itself. At low optimisation levels
+# rustc shares generic instances with downstream crates (share-generics), so a
+# user crate would call e.g. the kernel's copy of `core::str::Bytes::into_iter`,
+# which link.ld puts in KFLASH: a MemManage fault from any thread. rustc shares
+# at opt-levels 0, 1, "s" and "z", and not at 2 and 3, so the kernel builds at
+# 2 in both profiles. The placement check (`cargo xtask build`,
+# xtask/src/placement.rs) catches a regression.
+[profile.dev.package.kernel]
+opt-level = 2
+
+[profile.release.package.kernel]
+opt-level = 2
+
 [profile.release]
 panic = "abort"
 opt-level = "s"
