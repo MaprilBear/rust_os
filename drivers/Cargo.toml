@@ -21,3 +21,11 @@ saturating_cast = "0.1.0"
 
 [dev-dependencies]
 kernel = { path = "../kernel", features = ["test-support"] }
+
+# Model checking of the lock-free FIFO: `cargo xtask test-loom` builds with
+# `--cfg loom`, which swaps in loom's atomics and cell (src/fifo.rs).
+[target.'cfg(loom)'.dev-dependencies]
+loom = "0.7"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)"] }
