@@ -65,6 +65,10 @@ RUN rustup toolchain install nightly-2026-11-19 --profile minimal \
         --component miri,rust-src,llvm-tools \
     && cargo install --locked cargo-fuzz
 
+# probe-rs, for `cargo xtask test-hw` on an nRF52840-DK. The container needs
+# the probe's USB device (see docs/TESTING.md, "Hardware").
+RUN cargo install --locked probe-rs-tools --version 0.30.0
+
 # World-writable cargo home so the container can run as the host user
 # (avoids root-owned target/ directories on the host).
 ENV CARGO_HOME=/cargo-home
