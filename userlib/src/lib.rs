@@ -4,8 +4,8 @@
 //! KFLASH), so threads can execute it after the MPU makes kernel flash
 //! privileged-only. It talks to the kernel solely through `svc`.
 //!
-//! Calling convention: the argument (if any) goes in r0; the return value comes
-//! back in r0.
+//! Calling convention: up to two arguments in r0 and r1; the return value
+//! comes back in r0.
 //!
 //! Also builds for a host OS (tests): see [`host`].
 #![no_std]
@@ -32,6 +32,15 @@ pub enum Syscall {
     SemTake = 3, // r0 = semaphore handle -> r0 = 0 ok / 1 error; may block
     SemGive = 4, // r0 = semaphore handle -> r0 = 0 ok / 1 error
     Fault = 5,   // the calling thread hit an unrecoverable error (e.g. panicked)
+    /// r0 = pointer, r1 = length (at most 256) -> r0 = 0 ok / 1 the buffer is
+    /// too long or not readable by the caller (user RAM or user flash).
+    /// Writes the bytes to the kernel's debug console as one unit.
+    DebugWrite = 6,
+    /// Kernel feature `ktest` only (else 1). r0 = pointer to a word in user
+    /// RAM (0: disarm), r1 = value. The calling thread's next MemManage fault
+    /// writes the value, with the fault's MMFSR in bits 24-31, there and parks
+    /// the thread instead of stopping the system. -> r0 = 0 ok / 1 error.
+    ExpectFault = 7,
     Invalid = u8::MAX,
 }
 
@@ -46,6 +55,8 @@ impl TryFrom<u8> for Syscall {
             3 => Ok(Self::SemTake),
             4 => Ok(Self::SemGive),
             5 => Ok(Self::Fault),
+            6 => Ok(Self::DebugWrite),
+            7 => Ok(Self::ExpectFault),
             _ => Err(()),
         }
     }
@@ -55,8 +66,8 @@ impl TryFrom<u8> for Syscall {
 // Syscall wrappers
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Issue syscall `$num` (optionally with `$arg` in r0) and return the
-/// kernel's r0.
+/// Issue syscall `$num` (optionally with arguments in r0 and r1) and return
+/// the kernel's r0.
 ///
 /// Every `svc` in this project must declare r0 as an output: the kernel
 /// *always* writes a return value into the caller's stacked r0, even for calls
@@ -80,7 +91,7 @@ macro_rules! syscall {
         }
         #[cfg(not(target_os = "none"))]
         {
-            host::syscall($num as u8, 0)
+            host::syscall($num as u8, 0, 0)
         }
     }};
     ($num:expr, $arg:expr) => {{
@@ -92,7 +103,26 @@ macro_rules! syscall {
         }
         #[cfg(not(target_os = "none"))]
         {
-            host::syscall($num as u8, $arg)
+            host::syscall($num as u8, $arg, 0)
+        }
+    }};
+    ($num:expr, $arg0:expr, $arg1:expr) => {{
+        #[cfg(target_os = "none")]
+        {
+            let r0: usize;
+            unsafe {
+                core::arch::asm!(
+                    "svc #{n}",
+                    n = const $num as u8,
+                    inout("r0") $arg0 => r0,
+                    in("r1") $arg1,
+                )
+            };
+            r0
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            host::syscall($num as u8, $arg0, $arg1)
         }
     }};
 }
@@ -113,6 +143,19 @@ pub fn sys_sem_take(handle: usize) -> usize {
 
 pub fn sys_sem_give(handle: usize) -> usize {
     syscall!(Syscall::SemGive, handle)
+}
+
+/// Write `len` bytes at `ptr` to the debug console, as one unit (nothing else
+/// the kernel prints can land in the middle). 0 if written, 1 if the buffer
+/// is not readable by the calling thread.
+pub fn sys_debug_write(ptr: usize, len: usize) -> usize {
+    syscall!(Syscall::DebugWrite, ptr, len)
+}
+
+/// Arm (or, with `ptr` 0, disarm) the kernel's expected-fault hook for the
+/// calling thread. See [`Syscall::ExpectFault`].
+pub fn sys_expect_fault(ptr: usize, value: usize) -> usize {
+    syscall!(Syscall::ExpectFault, ptr, value)
 }
 
 /// Report that the calling thread cannot continue. The kernel does not return
@@ -230,15 +273,15 @@ mod tests {
 
     /// The host syscall hook is global: serialise the tests that use it.
     static HOOK: Mutex<()> = Mutex::new(());
-    static CALLS: Mutex<Vec<(u8, usize)>> = Mutex::new(Vec::new());
+    static CALLS: Mutex<Vec<(u8, usize, usize)>> = Mutex::new(Vec::new());
 
-    fn record(num: u8, arg: usize) -> usize {
-        CALLS.lock().unwrap().push((num, arg));
-        // Fail SemTake/SemGive on handle 0xBAD, succeed otherwise.
-        usize::from(arg == 0xBAD)
+    fn record(num: u8, arg0: usize, arg1: usize) -> usize {
+        CALLS.lock().unwrap().push((num, arg0, arg1));
+        // Fail on handle/pointer 0xBAD, succeed otherwise.
+        usize::from(arg0 == 0xBAD)
     }
 
-    fn with_hook<R>(f: impl FnOnce() -> R) -> (R, Vec<(u8, usize)>) {
+    fn with_hook<R>(f: impl FnOnce() -> R) -> (R, Vec<(u8, usize, usize)>) {
         let _g = HOOK.lock().unwrap_or_else(|e| e.into_inner());
         CALLS.lock().unwrap().clear();
         host::set_syscall_handler(Some(record));
@@ -256,6 +299,8 @@ mod tests {
             Syscall::SemTake,
             Syscall::SemGive,
             Syscall::Fault,
+            Syscall::DebugWrite,
+            Syscall::ExpectFault,
         ] {
             assert_eq!(Syscall::try_from(s as u8), Ok(s));
         }
@@ -263,7 +308,7 @@ mod tests {
             (0..=255u8)
                 .filter(|&n| Syscall::try_from(n).is_ok())
                 .count(),
-            6
+            8
         );
         assert_eq!(Syscall::try_from(Syscall::Invalid as u8), Err(()));
     }
@@ -277,16 +322,20 @@ mod tests {
             assert_eq!(sys_sem_take(0x2000_0010), 0);
             assert_eq!(sys_sem_give(0x2000_0010), 0);
             assert_eq!(sys_sem_take(0xBAD), 1, "the kernel's r0 comes back");
+            assert_eq!(sys_debug_write(0x2000_8000, 12), 0);
+            assert_eq!(sys_expect_fault(0x2000_8004, 0xF00D), 0);
         });
         assert_eq!(
             calls,
             [
-                (Syscall::Yield as u8, 0),
-                (Syscall::Sleep as u8, 7),
-                (Syscall::Sleep as u8, u32::MAX as usize),
-                (Syscall::SemTake as u8, 0x2000_0010),
-                (Syscall::SemGive as u8, 0x2000_0010),
-                (Syscall::SemTake as u8, 0xBAD),
+                (Syscall::Yield as u8, 0, 0),
+                (Syscall::Sleep as u8, 7, 0),
+                (Syscall::Sleep as u8, u32::MAX as usize, 0),
+                (Syscall::SemTake as u8, 0x2000_0010, 0),
+                (Syscall::SemGive as u8, 0x2000_0010, 0),
+                (Syscall::SemTake as u8, 0xBAD, 0),
+                (Syscall::DebugWrite as u8, 0x2000_8000, 12),
+                (Syscall::ExpectFault as u8, 0x2000_8004, 0xF00D),
             ]
         );
     }
@@ -299,8 +348,8 @@ mod tests {
         assert_eq!(
             calls,
             [
-                (Syscall::SemTake as u8, 0x2000_0040),
-                (Syscall::SemGive as u8, 0x2000_0040)
+                (Syscall::SemTake as u8, 0x2000_0040, 0),
+                (Syscall::SemGive as u8, 0x2000_0040, 0)
             ]
         );
     }

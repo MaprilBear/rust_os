@@ -29,7 +29,7 @@ cargo xtask test-host     # tier 1
 cargo xtask test-loom     # tier 1, loom model checks (drivers, --cfg loom)
 cargo xtask miri          # tier 3, the host tests under Miri (nightly)
 cargo xtask fuzz          # tier 3, cargo-fuzz, 60 s of `syscalls` (nightly)
-cargo xtask test-renode   # tier 2 in Renode (today: renode/*.robot)
+cargo xtask test-renode   # tier 2 in Renode (renode/*.robot, renode/tests/)
 cargo xtask test          # test-host, test-loom and test-renode
 cargo xtask help          # everything else (build, check-placement, clippy, fmt)
 ```
@@ -62,11 +62,9 @@ xtask/                     `cargo xtask` (build, placement check, test runners)
 renode/*.robot             Renode suites (run by `cargo xtask test-renode`)
 kernel/src/model_tests.rs  model-based tests of the scheduler and semaphores
 fuzz/                      cargo-fuzz targets (nightly, own workspace)
-
-planned:
 ktest/                     on-target test harness (no_std)
-tests-target/              one firmware image per target suite
-renode/tests/              Robot suites for those images
+tests-target/              one firmware image per target suite (src/bin)
+renode/tests/              Robot suites for those images (ktest.resource)
 ```
 
 ## Tier 1: host tests
@@ -181,13 +179,27 @@ by weakening an ordering and watching it fail.
 What host tests cannot see: real interrupt preemption (`cpsid i`, PendSV
 tail-chaining, an ISR landing inside `schedule()`). That is tier 2/3's job.
 
-## Tier 2: target tests (planned)
+## Tier 2: target tests
 
-- **`ktest`** (no_std, user flash): test registration, assertions, timeouts, a
-  seeded PRNG and a reporter. Tests run as unprivileged threads inside the real
-  kernel, with the real MPU.
-- **One image per suite** in `tests-target`, each with its own `user_main`,
-  built and placement-checked like the app.
+Tests run as unprivileged threads inside the real kernel, with the real MPU,
+in Renode (and, later, on the DK: step 8).
+
+- **`ktest`** (`ktest/`, no_std, user flash): `ktest::start(suite, tests![..])`
+  from an image's `user_main` adds a runner thread (priority 0) and one worker
+  thread per test (priority 3; a suite may add helper threads of its own,
+  above or below). The runner hands the tests to the workers one at a time
+  and times each out (default 2 s, `tests![name = ms]`). A test fails by
+  panicking; `ktest::expect_fault(|| ..)` passes when the closure takes a
+  MemManage fault, and `expect_fault_on(Access::Instruction | Access::Data, ..)`
+  also checks its kind (MMFSR); `ktest::Rng` is a seeded xorshift32. Each
+  test has its own outcome word, and the panic handler finds the test of the
+  thread that panicked from its stack, so a test that panics, faults or
+  finishes after it timed out cannot change another test's result. At most
+  64 tests per image (`MAX_TESTS`); each worker's 4 KiB stack runs user RAM
+  out at about 50.
+- **One image per suite** in `tests-target/src/bin/<suite>.rs`, each with its
+  own `user_main`, built and placement-checked like the app by
+  `cargo xtask test-renode`.
 - **Protocol**, line-based and identical on Renode and hardware:
 
   ```
@@ -195,38 +207,105 @@ tail-chaining, an ISR landing inside `schedule()`). That is tier 2/3's job.
   KTEST RUN <suite>::<test>
   KTEST PASS <suite>::<test>
   KTEST FAIL <suite>::<test> <file>:<line> <message>
+  KTEST FAIL <suite>::<test> - timed out after <ms> ms
   KTEST ABORT <reason>
   KTEST DONE pass=<n> fail=<n>
   ```
 
   The seed comes first so a crash or hang still reports it. Each line is
-  written whole, inside one critical section, and messages escape newlines, so
-  other kernel output (`dprintln!` from an ISR, a fault dump) cannot split a
-  line. The runner reads only lines starting with `KTEST ` and treats a missing
-  `DONE` within the timeout as a failure.
-- **Transport**, chosen by cargo feature: the debug console in Renode; RTT
-  through probe-rs on the DK (it does not depend on the UART driver under
-  test). DK images build without `debugcon`, since a write to 0x6000_0000
-  bus-faults on real hardware. RTT must block when its buffer is full
-  (or the runner must attach before reset), otherwise early lines are lost.
-- **Kernel hooks** (feature `ktest`):
-  - The syscall ABI grows from one argument (r0) to two (r0-r1) on the target,
-    in the host bridge and in userlib.
-  - `DebugWrite(ptr, len)` lets unprivileged test threads report. Its pointer
-    check (`user_can_read`) is itself a test and fuzz target.
-  - Today a panic in a thread halts the whole image and its message is lost
-    (unprivileged code cannot print). Under `ktest`, the panic handler sends a
-    `FAIL` line through `DebugWrite`, the Fault syscall parks the thread
-    instead of halting, and the remaining fault handlers (HardFault,
-    BusFault, UsageFault) print `KTEST ABORT`.
-  - An expected-fault hook in the MemManage handler reports the fault and
-    parks the thread, so MPU tests can continue.
-- **Runners**: the existing `cargo xtask test-renode` gains the suite images;
-  a new `cargo xtask test-hw` drives probe-rs. Robot already writes
-  `robot_output.xml`; JUnit XML for CI would come from `rebot --xunit`.
-- **Hardware**: nRF52840-DK with its on-board debugger. UART tests use the DK's
-  USB serial port (P0.06 TX / P0.08 RX), which first needs `uart_init`'s pins
-  to be configurable.
+  written whole with one `DebugWrite`, which the kernel prints inside one
+  critical section, and messages escape newlines, so other kernel output
+  (`dprintln!` from an ISR, a fault dump) cannot split a line. Lines longer
+  than 200 bytes end in `...`.
+- **Seed**: `KTEST_SEED` (two words in `.uninit`, which the boot code leaves
+  alone) holds a magic and the seed; Renode writes it before starting the
+  image (`ktest.resource`, Robot variable `SEED`). Without the magic (power-on
+  garbage on hardware) the seed is 1.
+- **Kernel hooks**:
+  - Syscalls take two arguments (r0-r1) on the target, in the host bridge and
+    in userlib.
+  - `DebugWrite(ptr, len)` lets unprivileged threads report, at most 256
+    bytes (interrupts are off while it prints). The kernel checks the buffer
+    with `user_can_read`: user RAM or user flash, never kernel flash
+    (host-tested and fuzzed).
+  - Feature `ktest` (on for `tests-target` and the host test run of the
+    kernel with `--features ktest`): the Fault syscall parks the thread
+    instead of halting; `ExpectFault(ptr, value)` arms a one-shot hook for the
+    calling thread, and the MemManage handler, for a fault in that thread,
+    writes `value` with the MMFSR in bits 24-31 to `ptr` and parks it (never
+    for a fault while stacking or unstacking the thread's frame, when its
+    stack pointer is somewhere it may not write); other faults (MemManage, HardFault,
+    with BusFault and UsageFault escalating to it) print `KTEST ABORT ...`.
+    The MemManage report includes the faulting thread's PC.
+  - A panic in a test thread prints `FAIL` through `DebugWrite` (the
+    `#[panic_handler]` is `ktest`'s), then asks the kernel to park it. A panic
+    in privileged code prints `KTEST ABORT panic: ...` and stops.
+- **Runner**: `cargo xtask test-renode` builds the app and every suite image
+  and passes `KTEST_DIR` to Robot. `renode/tests/ktest.resource` has
+  `Run KTest Suite <image>`: boot it, wait for `KTEST DONE` or `KTEST ABORT`,
+  and require `fail=0`; the log in Robot's report has every `KTEST` line.
+  `renode/tests/ktest_selftest.robot` checks the harness itself against an
+  image whose tests pass, fail, hang and fault on purpose.
+- **Transport**, by cargo feature: the debug console in Renode; RTT through
+  probe-rs on the DK (planned, step 8; it does not depend on the UART driver
+  under test). DK images build without `debugcon`, since a write to
+  0x6000_0000 bus-faults on real hardware. RTT must block when its buffer is
+  full (or the runner must attach before reset), otherwise early lines are
+  lost.
+- **Hardware** (planned): nRF52840-DK with its on-board debugger. UART tests use
+  the DK's USB serial port (P0.06 TX / P0.08 RX), which first needs
+  `uart_init`'s pins to be configurable.
+
+### Writing a target test
+
+```rust
+#![no_std]
+#![no_main]
+
+use ktest::{expect_fault, tests};
+
+#[no_mangle]
+pub extern "C" fn user_main() {
+    ktest::start("my_suite", tests![adds, reads_kernel_ram, slow = 5000]);
+}
+
+fn adds() {
+    assert_eq!(1 + 1, 2);
+}
+
+fn reads_kernel_ram() {
+    expect_fault(|| unsafe { core::ptr::read_volatile(0x2000_0000 as *const u32); });
+}
+
+fn slow() { /* ... */ }
+```
+
+Then `renode/tests/my_suite.robot`:
+
+```
+*** Settings ***
+Suite Setup       Setup
+Suite Teardown    Teardown
+Test Setup        Reset Emulation
+Test Teardown     Test Teardown
+Resource          ktest.resource
+
+*** Test Cases ***
+My Suite
+    Run KTest Suite    my_suite
+```
+
+### Generic instances and the kernel/user split
+
+Found while bringing up `ktest`: in debug builds rustc shares generic
+instances across crates, so a user crate that depends on `kernel` could call
+the kernel's own copy of, say, `core::str::Bytes::into_iter`. link.ld puts
+everything from the kernel rlib in KFLASH, so a thread calling it takes a
+MemManage fault. rustc shares at opt-levels 0, 1, "s" and "z", so the root
+`Cargo.toml` builds the kernel at opt-level 2 in both profiles, and the
+placement check fails
+any image where user code references a non-kernel symbol defined in a kernel
+object (from the linker's cross-reference table, `--cref`).
 
 ## Tier 3: fuzzing and stress
 
@@ -258,7 +337,8 @@ tail-chaining, an ISR landing inside `schedule()`). That is tier 2/3's job.
   ticks, interrupt gives and switches. The harness takes
   `test_support::lock()` per input, declares its semaphore array as `.ksem`
   (so handles go through the real range/alignment check), sets the user RAM
-  range to the buffer (no syscall takes a pointer yet; `DebugWrite` will),
+  range to the buffer (so `DebugWrite` can print from it, and must read only
+  inside it),
   skips `Fault` (which halts by design), and checks the scheduler and
   semaphore invariants after every step; anything else must never panic. `cargo xtask fuzz [<target>] [--time <s>]`; crashes
   are saved in `fuzz/artifacts/`, replay one with
@@ -315,7 +395,7 @@ approval.
    (`arch` layer, `test_support`), split out `drivers`, add `cargo xtask`.
 2. [x] Kernel host unit tests
 3. [x] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
-4. [ ] `ktest` harness and runner, in Renode
+4. [x] `ktest` harness and runner, in Renode
 5. [ ] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
 6. [ ] Driver suites (host + target) (host part done)
 7. [ ] On-target stress fuzzing

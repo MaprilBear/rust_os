@@ -386,6 +386,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ktest"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "kernel",
+ "userlib",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -785,6 +794,15 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
+]
+
+[[package]]
+name = "tests-target"
+version = "0.1.0"
+dependencies = [
+ "kernel",
+ "ktest",
+ "userlib",
 ]
 
 [[package]]

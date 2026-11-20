@@ -1,0 +1,13 @@
+[package]
+name = "ktest"
+version = "0.1.0"
+edition = "2021"
+
+# On-target test harness (docs/TESTING.md, tier 2). Linked into user flash like
+# any non-kernel crate: tests run as unprivileged threads inside the real
+# kernel, with the real MPU. Only builds for the target.
+
+[dependencies]
+kernel = { path = "../kernel", default-features = false, features = ["ktest"] }
+userlib = { path = "../userlib" }
+critical-section = "1.2.0"

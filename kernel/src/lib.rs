@@ -25,6 +25,7 @@ compile_error!("the `test-support` feature is for host builds only");
 pub mod debugcon;
 
 mod arch;
+mod fault;
 mod irq;
 #[cfg(test)]
 mod model_tests;

@@ -51,7 +51,7 @@ pub(crate) fn ksem_range() -> Range<usize> {
     addr_of!(_sksem) as usize..addr_of!(_eksem) as usize
 }
 
-/// All flash.
+/// User flash (threads may read it; kernel flash is privileged-only).
 pub(crate) fn flash_range() -> Range<usize> {
     let base = addr_of!(_flash_base) as usize;
     base..base + addr_of!(_flash_size) as usize

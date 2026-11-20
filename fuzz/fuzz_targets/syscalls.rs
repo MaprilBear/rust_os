@@ -12,9 +12,9 @@
 //! (`set_ksem_range`), so handles go through the kernel's real check (inside
 //! the section, a multiple of the object size), not the host registry.
 //!
-//! Arguments are drawn from semaphore handles (valid, off by a few bytes, or
-//! unregistered), pointers into a host buffer that stands in for user RAM,
-//! and raw integers.
+//! Arguments (r0 and r1) are drawn from semaphore handles (valid, off by a
+//! few bytes, or unregistered), pointers into a host buffer that stands in for
+//! user RAM (`DebugWrite` must read only inside it), and raw integers.
 
 #![no_main]
 
@@ -49,7 +49,8 @@ enum Arg {
 
 #[derive(Arbitrary, Debug)]
 enum Op {
-    Syscall(u8, Arg),
+    /// Number, r0, r1.
+    Syscall(u8, Arg, Arg),
     Tick,
     IsrGive(u8),
     Switch,
@@ -139,14 +140,14 @@ fuzz_target!(|input: Input| {
 
     for op in input.ops.iter().take(256) {
         match op {
-            Op::Syscall(num, a) => {
+            Op::Syscall(num, a0, a1) => {
                 // A thread only runs once PendSV has; idle makes no syscalls;
                 // Fault halts the kernel by design.
                 run_pending_switch();
                 if current() == Some(0) || *num == Syscall::Fault as u8 {
                     continue;
                 }
-                dispatch(*num, arg(a), Caller::Thread);
+                dispatch2(*num, arg(a0), arg(a1), Caller::Thread);
             }
             Op::Tick => tick(),
             Op::IsrGive(i) => in_isr(|| kernel::give_from_isr(&SEMS[*i as usize % SEMS.len()])),

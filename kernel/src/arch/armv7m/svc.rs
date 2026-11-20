@@ -27,6 +27,7 @@ extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
     // Stacked frame: r0 r1 r2 r3 r12 LR PC xPSR. The SVC number is the byte before the stacked PC.
     let pc = unsafe { frame.add(6).read() };
     let arg0 = unsafe { frame.read() } as usize;
+    let arg1 = unsafe { frame.add(1).read() } as usize;
     let num = unsafe { ((pc - 2) as *const u8).read() };
     // EXC_RETURN low nibble 0x9: from thread mode on MSP, privileged. Only the
     // boot code runs that way; threads use PSP (0xD).
@@ -36,7 +37,7 @@ extern "C" fn svc_dispatch(frame: *mut u32, exc_return: u32) {
         Caller::Thread
     };
 
-    let r0 = syscall::dispatch(num, arg0, caller);
+    let r0 = syscall::dispatch(num, arg0, arg1, caller);
 
     unsafe { frame.write(r0 as u32) };
 }

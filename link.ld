@@ -123,6 +123,15 @@ SECTIONS
         _eubss = .;
     } > URAM
 
+    /* Left alone by the boot code (neither copied nor zeroed): something
+     * outside the image may write it before the image starts, such as the
+     * ktest seed that Renode or a debugger sets (ktest/src/lib.rs). */
+    .uninit (NOLOAD) : ALIGN(4)
+    {
+        *(.uninit .uninit.*)
+        . = ALIGN(4);
+    } > URAM
+
     /* The rest of URAM is the user heap. Thread stacks (PSP) are carved out of
      * it by the kernel's second allocator, so they are unprivileged-accessible. */
     _suser_heap = ALIGN(8);
@@ -135,8 +144,10 @@ SECTIONS
     _kram_size   = LENGTH(KRAM);
 
     /* Ranges the kernel uses to validate user pointers passed to syscalls. */
-    _flash_base  = ORIGIN(KFLASH);
-    _flash_size  = LENGTH(KFLASH) + LENGTH(UFLASH);
+    /* User flash only: kernel flash is privileged, so a syscall must not
+     * read it on a thread's behalf (e.g. DebugWrite). */
+    _flash_base  = ORIGIN(UFLASH);
+    _flash_size  = LENGTH(UFLASH);
     _uram_base   = ORIGIN(URAM);
     _uram_size   = LENGTH(URAM);
 

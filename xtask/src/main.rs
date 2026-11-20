@@ -16,8 +16,8 @@ use std::process::{Command, ExitCode, Stdio};
 
 /// Name of the firmware binary (app/Cargo.toml `[[bin]]`).
 const FIRMWARE_BIN: &str = "rust_os";
-/// Name of the linker map app/build.rs writes into its OUT_DIR.
-const MAP_FILE: &str = "rust_os.map";
+/// The package with the on-target test images (one binary per suite).
+const SUITES_PACKAGE: &str = "tests-target";
 /// Crates whose unit tests run on the host.
 const HOST_TEST_CRATES: &[&str] = &["kernel", "userlib", "drivers"];
 
@@ -46,7 +46,8 @@ const COMMANDS: &[Cmd] = &[
     Cmd {
         name: "test-host",
         usage: "test-host [-- <test binary args>]\n    \
-                unit/property tests of kernel, userlib and drivers on the host;\n    \
+                unit/property tests of kernel, userlib and drivers on the host, then\n    \
+                the kernel again with its `ktest` feature;\n    \
                 args after -- go to the test binaries (a name filter, --nocapture, ...)",
         run: test_host,
     },
@@ -72,8 +73,9 @@ const COMMANDS: &[Cmd] = &[
     Cmd {
         name: "test-renode",
         usage: "test-renode [-- <renode-test args> <suite.robot>...]\n    \
-                build (debug) and run the Robot suites in Renode: renode/*.robot and\n    \
-                renode/tests/**/*.robot, or only the .robot files given after --",
+                build the app and the tests-target images (debug) and run the Robot\n    \
+                suites in Renode: renode/*.robot and renode/tests/**/*.robot, or only\n    \
+                the .robot files given after -- (e.g. --variable SEED:7)",
         run: test_renode,
     },
     Cmd {
@@ -166,7 +168,24 @@ fn test_host(args: &[String]) -> Result {
     if !opts.passthrough.is_empty() {
         cmd.arg("--").args(&opts.passthrough);
     }
-    run(&mut cmd)
+    run(&mut cmd)?;
+
+    // The kernel again as on-target test images build it (feature `ktest`:
+    // faulting threads are parked, expected faults).
+    let mut ktest = cargo();
+    ktest
+        .args([
+            "test",
+            "--no-fail-fast",
+            "--all-targets",
+            "--target",
+            "host-tuple",
+        ])
+        .args(["-p", "kernel", "--features", "ktest"]);
+    if !opts.passthrough.is_empty() {
+        ktest.arg("--").args(&opts.passthrough);
+    }
+    run(&mut ktest)
 }
 
 fn test_loom(args: &[String]) -> Result {
@@ -232,8 +251,15 @@ fn host_triple() -> Result<String> {
 
 fn test_renode(args: &[String]) -> Result {
     let opts = Opts::parse(args, &[], &[])?;
-    // Debug build with default features: the suites read the debug console.
+    // Debug builds with default features: the suites read the debug console.
     let firmware = build_firmware(&[])?;
+    let images = build_suite_images()?;
+    // All suite images land in one directory (cargo's per-profile dir).
+    let image_dir = images
+        .first()
+        .and_then(|i| i.elf.parent())
+        .ok_or("no on-target test images were built")?
+        .to_path_buf();
 
     // .robot files after -- replace the discovered suites; relative paths are
     // relative to where xtask was started.
@@ -263,6 +289,8 @@ fn test_renode(args: &[String]) -> Result {
         .arg(&results)
         .arg("--variable")
         .arg(format!("ELF:{}", firmware.elf.display()))
+        .arg("--variable")
+        .arg(format!("KTEST_DIR:{}", image_dir.display()))
         .args(renode_args)
         .args(&suites);
     eprintln!("(Robot reports: {})", results.display());
@@ -298,6 +326,14 @@ fn clippy(args: &[String]) -> Result {
     }
     lint_args(&mut host);
     run(&mut host)?;
+
+    // The kernel as on-target test images build it.
+    let mut ktest = cargo();
+    ktest
+        .args(["clippy", "--all-targets", "--target", "host-tuple"])
+        .args(["-p", "kernel", "--features", "ktest"]);
+    lint_args(&mut ktest);
+    run(&mut ktest)?;
 
     // The drivers as `test-loom` builds them.
     let mut loom = cargo();
@@ -354,31 +390,59 @@ fn check_placement_cmd(args: &[String]) -> Result {
     check_placement(Path::new(map), Path::new(elf))
 }
 
-/// The ELF and linker map one firmware build produced.
+/// The ELF and linker map of one firmware image.
 struct Firmware {
+    name: String,
     elf: PathBuf,
     map: PathBuf,
 }
 
-/// `cargo build <cargo_args>` for the firmware, then the placement check.
-/// The ELF and map paths come from cargo's own build messages, so they are
-/// right for any profile, feature set, target dir or build dir.
+/// `cargo build <cargo_args>` for the firmware (the app), then the placement
+/// check.
 fn build_firmware(cargo_args: &[String]) -> Result<Firmware> {
+    build_images(cargo_args)?
+        .into_iter()
+        .find(|f| f.name == FIRMWARE_BIN)
+        .ok_or_else(|| "cargo did not report the firmware executable".into())
+}
+
+/// The on-target test images (tests-target, one per suite), debug, each
+/// placement-checked.
+fn build_suite_images() -> Result<Vec<Firmware>> {
+    build_images(&["-p".into(), SUITES_PACKAGE.into(), "--bins".into()])
+}
+
+/// `cargo build <cargo_args>`, then the placement check of every binary it
+/// built. Each binary's build script writes `<bin>.map` into its OUT_DIR. The
+/// paths come from cargo's own build messages, so they are right for any
+/// profile, feature set, target dir or build dir.
+fn build_images(cargo_args: &[String]) -> Result<Vec<Firmware>> {
     let mut cmd = cargo();
     cmd.args(["build", "--message-format=json-render-diagnostics"])
         .args(cargo_args)
         .stdout(Stdio::piped());
     let stdout = run_capture(&mut cmd)?;
 
-    let (mut elf, mut out_dirs) = (None, Vec::new());
+    let (mut bins, mut out_dirs) = (Vec::new(), Vec::new());
     for line in stdout.lines() {
         let Ok(msg) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
         match msg["reason"].as_str() {
-            Some("compiler-artifact") if msg["target"]["name"] == FIRMWARE_BIN => {
-                if let Some(exe) = msg["executable"].as_str() {
-                    elf = Some((msg["package_id"].clone(), PathBuf::from(exe)));
+            Some("compiler-artifact") => {
+                let is_bin = msg["target"]["kind"]
+                    .as_array()
+                    .is_some_and(|k| k.iter().any(|k| k == "bin"));
+                if let (true, Some(exe), Some(name)) = (
+                    is_bin,
+                    msg["executable"].as_str(),
+                    msg["target"]["name"].as_str(),
+                ) {
+                    bins.push((
+                        msg["package_id"].clone(),
+                        name.to_string(),
+                        PathBuf::from(exe),
+                    ));
                 }
             }
             Some("build-script-executed") => {
@@ -389,18 +453,22 @@ fn build_firmware(cargo_args: &[String]) -> Result<Firmware> {
             _ => {}
         }
     }
-    let (package, elf) = elf.ok_or("cargo did not report the firmware executable")?;
-    let out_dir = out_dirs
-        .into_iter()
-        .find(|(p, _)| *p == package)
-        .map(|(_, d)| d)
-        .ok_or("cargo did not report the firmware's build script output")?;
-    let firmware = Firmware {
-        elf,
-        map: out_dir.join(MAP_FILE),
-    };
-    check_placement(&firmware.map, &firmware.elf)?;
-    Ok(firmware)
+    let mut images = Vec::new();
+    for (package, name, elf) in bins {
+        let out_dir = out_dirs
+            .iter()
+            .find(|(p, _)| *p == package)
+            .map(|(_, d)| d)
+            .ok_or_else(|| format!("cargo did not report {name}'s build script output"))?;
+        let image = Firmware {
+            map: out_dir.join(format!("{name}.map")),
+            name,
+            elf,
+        };
+        check_placement(&image.map, &image.elf)?;
+        images.push(image);
+    }
+    Ok(images)
 }
 
 fn check_placement(map: &Path, elf: &Path) -> Result {

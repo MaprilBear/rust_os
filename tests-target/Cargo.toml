@@ -1,0 +1,21 @@
+[package]
+name = "tests-target"
+version = "0.1.0"
+edition = "2021"
+
+# On-target test images (docs/TESTING.md, tier 2): one firmware image per
+# suite, src/bin/<suite>.rs, each with its own `user_main` that hands its
+# tests to the `ktest` harness. Built and placement-checked like the app by
+# `cargo xtask test-renode`.
+
+autobins = true
+
+[features]
+# The KTEST lines go to the debug console in Renode.
+default = ["debugcon"]
+debugcon = ["kernel/debugcon"]
+
+[dependencies]
+kernel = { path = "../kernel", default-features = false, features = ["ktest"] }
+userlib = { path = "../userlib" }
+ktest = { path = "../ktest" }
