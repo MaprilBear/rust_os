@@ -8,6 +8,9 @@ Resource          ${RENODEKEYWORDS}
 # Set by `cargo xtask test-renode`: the directory holding the suite images.
 ${KTEST_DIR}      ${CURDIR}/../../target/thumbv7em-none-eabihf/debug
 ${SEED}           1
+# CPU speed for the suites; `default` keeps Renode's. Changing it moves
+# interrupts and ticks relative to the code (e.g. --variable MIPS:5).
+${MIPS}           default
 # Virtual seconds a suite may take before the runner gives up.
 ${KTEST_TIMEOUT}  120
 
@@ -22,6 +25,9 @@ Load KTest Image
     ${addr}=    Evaluate    int("""${addr}""".strip(), 16)
     Execute Command    sysbus WriteDoubleWord ${addr} 0x5EED5EED
     Execute Command    sysbus WriteDoubleWord ${{${addr} + 4}} ${seed}
+    IF    '${MIPS}' != 'default'
+        Execute Command    cpu PerformanceInMips ${MIPS}
+    END
     Create Log Tester    ${KTEST_TIMEOUT}
 
 Run KTest Suite

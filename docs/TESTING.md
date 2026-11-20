@@ -256,6 +256,38 @@ in Renode (and, later, on the DK: step 8).
   the DK's USB serial port (P0.06 TX / P0.08 RX), which first needs
   `uart_init`'s pins to be configurable.
 
+### Target suites
+
+| Image (`tests-target/src/bin`) | Robot (`renode/tests`) | Covers |
+|---|---|---|
+| `ktest_selftest` | `ktest_selftest.robot` | the harness: every outcome line, timeouts, expected faults, the seed |
+| `kernel_sched` | `kernel.robot` | preemption by a woken higher-priority thread, lower priority waits, equal priorities alternate on yield, waking an equal-priority waiter yields to it, sleep order, r1-r12 across real context switches (with a thread that clobbers them running in between) |
+| `kernel_sem` | `kernel.robot` | mutual exclusion across threads (fails without the semaphore), FIFO wake-up among equal priorities, counting, `give_from_isr` from a real interrupt (EGU0), and the thread it wakes preempting a lower one |
+| `kernel_syscalls` | `kernel.robot` | Start from a thread, unknown numbers, forged semaphore handles, `DebugWrite`/`ExpectFault` pointer checks |
+| `kernel_mpu` | `kernel.robot` | MemManage (data or instruction, as expected) on reading/writing kernel RAM and flash at their edges, forging a semaphore object, reading kernel flash, executing kernel code, writing flash and the vector table, executing from RAM, the debug console; user RAM, flash and peripherals stay accessible |
+| `kernel_fpu` | `kernel.robot` (`known-issue`) | floating point in threads (known issue 18) |
+
+Unprivileged access to the System Control Space (NVIC, SysTick, MPU) is a
+BusFault on hardware, which escalates to HardFault and stops the system, so
+no suite probes it. Renode reports a MemManage fault there instead, which is
+why the MPU tests check the kind of fault (`expect_fault_on`): an
+"executing kernel code" test must fail on the instruction fetch, not on the
+kernel function's first SysTick read.
+
+`--variable MIPS:<n>` (Robot) runs the suites at another CPU speed, which
+moves ticks and interrupts relative to the code; timing-sensitive tests start
+on a tick (`sys_sleep(1)`) and keep two ticks of margin. They assume a
+syscall takes much less than the 1 ms tick: they pass at the default speed
+and at 25 and 64 MIPS (the nRF52840 runs at 64 MHz), but not at 5 MIPS and
+below in a debug build, where one syscall and switch take milliseconds. Slow
+speeds also show known issue 11: with the runner preempting every other tick,
+round robin keeps restarting at the head of a level, so `kernel_sched`'s
+equal-priority test logs `aaabbb`.
+
+A Robot test of an open known issue is tagged `known-issue`.
+`cargo xtask test-renode` leaves those out; run them with
+`cargo xtask test-renode -- --include known-issue`.
+
 ### Writing a target test
 
 ```rust
@@ -396,7 +428,7 @@ approval.
 2. [x] Kernel host unit tests
 3. [x] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
 4. [x] `ktest` harness and runner, in Renode
-5. [ ] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
+5. [x] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
 6. [ ] Driver suites (host + target) (host part done)
 7. [ ] On-target stress fuzzing
 8. [ ] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT)
@@ -468,6 +500,11 @@ test before it is fixed. The tag says where that test can run.
     forever.
 17. **Cleanup:** TIMER0-2 have four CC registers (TIMER3/4 have six), but
     `TimerRegs` gives every instance `cc4`/`cc5` and `compare4`/`compare5`.
+18. **[target]** Nothing enables the FPU (CPACR), so the first floating-point
+    instruction a thread executes raises a UsageFault (NOCP), which escalates
+    to HardFault and stops the system. On this hard-float target that is any
+    `f32`/`f64` arithmetic. Enabling it also needs PendSV to save s16-s31 and
+    to use the FP-aware EXC_RETURN (`kernel_fpu`, tagged `known-issue`).
 19. **[host]** A semaphore `give` wakes the oldest waiter; it should wake the
     highest-priority one (FIFO among equal priorities). Tests that rely on
     the order use waiters of equal priority until it is fixed.
