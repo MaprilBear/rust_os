@@ -13,7 +13,8 @@ pub static mut NEXT_TCB: *mut TCB = ptr::null_mut();
 
 pub trait Scheduler {
     fn schedule(&mut self);
-    fn add_thread(&mut self, thread: TCB);
+    /// Add a thread and return the id it was given.
+    fn add_thread(&mut self, thread: TCB) -> ThreadId;
     #[allow(dead_code)]
     fn remove_thread(&mut self, thread: ThreadId);
     fn tick(&mut self);
@@ -83,12 +84,13 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
         });
     }
 
-    fn add_thread(&mut self, thread: TCB) {
+    fn add_thread(&mut self, thread: TCB) -> ThreadId {
         critical_section::with(|_| {
             let index = self.tcb_list.push(thread);
             self.tcb_list[index].as_mut().unwrap().id = index;
             self.policy.on_add(self.tcb_list[index].as_ref().unwrap());
-        });
+            index
+        })
     }
 
     fn current_thread(&self) -> Option<ThreadId> {
@@ -240,4 +242,29 @@ pub static SCHEDULER: Global<ActiveScheduler> =
 /// Safety: caller must not hold another reference to the scheduler.
 pub unsafe fn scheduler() -> &'static mut ActiveScheduler {
     &mut *SCHEDULER.as_ptr()
+}
+
+/// Test support: look up a thread.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+impl<P: SchedulePolicy> SchedulerCore<P> {
+    pub(crate) fn tcb(&self, id: ThreadId) -> Option<&TCB> {
+        self.tcb_list.iter().nth(id).and_then(|slot| slot.as_ref())
+    }
+}
+
+/// Test support: back to "no threads", freeing every thread's stack (on a
+/// host, stacks come from the global allocator).
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) fn reset() {
+    critical_section::with(|_| unsafe {
+        let old = core::mem::replace(
+            &mut *SCHEDULER.as_ptr(),
+            SchedulerCore::new(PriorityPolicy::new()),
+        );
+        for tcb in old.tcb_list.iter().flatten() {
+            alloc::alloc::dealloc(tcb.stack_base, tcb.stack_layout);
+        }
+        CURR_TCB = ptr::null_mut();
+        NEXT_TCB = ptr::null_mut();
+    });
 }

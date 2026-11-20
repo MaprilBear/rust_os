@@ -113,6 +113,7 @@ static IRQ_TABLE: [AtomicPtr<()>; NUM_IRQS] = [const { AtomicPtr::new(ptr::null_
 
 /// The handler registered for IRQ line `irq`, if any. Called by the
 /// architecture's common IRQ entry.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no vector table
 pub(crate) fn handler_for(irq: usize) -> Option<extern "C" fn()> {
     let handler = IRQ_TABLE.get(irq)?.load(Ordering::Acquire);
     // Safety: only `irq_attach` stores non-null values, and it stores
@@ -153,4 +154,12 @@ pub fn irq_enable(irq: Interrupt) {
 /// Clear `irq`'s pending bit in the NVIC. Privileged code only.
 pub fn irq_unpend(irq: Interrupt) {
     arch::nvic_unpend(irq);
+}
+
+/// Test support: forget every registered handler.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) fn reset() {
+    for slot in &IRQ_TABLE {
+        slot.store(ptr::null_mut(), Ordering::Release);
+    }
 }

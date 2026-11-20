@@ -12,7 +12,14 @@
 //! application's `#[no_mangle] extern "C" fn user_main()` to register threads
 //! and drivers.
 //!
-//! Everything CPU- or linker-specific is behind `arch` (see `arch/mod.rs`).
+//! Everything CPU- or linker-specific is behind `arch` (see `arch/mod.rs`), so
+//! the rest of the crate also builds for a host and runs in host tests.
+
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+extern crate std;
+
+#[cfg(all(target_os = "none", feature = "test-support"))]
+compile_error!("the `test-support` feature is for host builds only");
 
 #[macro_use]
 pub mod debugcon;
@@ -23,6 +30,8 @@ mod scheduler;
 pub mod semaphore;
 mod simple_list;
 mod syscall;
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub mod test_support;
 
 extern crate alloc;
 
@@ -39,7 +48,7 @@ fn is_user_text(addr: usize) -> bool {
     arch::user_text_range().contains(&(addr & !1))
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThreadState {
     Ready,
     Running,
@@ -62,16 +71,18 @@ pub struct TCB {
     sleep_ms: u32,
 }
 
-type ThreadId = usize;
+/// Identifies a thread (its slot in the scheduler's thread list).
+pub type ThreadId = usize;
 
 /// One SysTick period: advance sleep timers and request a reschedule.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no SysTick
 pub(crate) fn os_tick() {
     unsafe { scheduler().tick() };
     os_yield();
 }
 
 pub type ThreadEntry = extern "C" fn() -> !;
-fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
+fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) -> ThreadId {
     // Threads run unprivileged, so their code must be in user flash.
     assert!(
         is_user_text(thread_entry as usize),
@@ -99,20 +110,22 @@ fn create_tcb(thread_entry: ThreadEntry, stack_words: usize, priority: u8) {
             stack_layout: layout,
             state: ThreadState::Ready,
             sleep_ms: 0,
-        });
+        })
     }
 }
 
 /// Called once by the boot code, before `user_main`.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))] // host: no boot code
 fn os_init() {
     arch::init_heaps();
     os_add_thread(userlib::idle_thread, 1024, 7);
 }
 
 /// Register a thread. Call only from `user_main` (privileged, before the
-/// scheduler starts). `priority` 0 is highest, 7 is the idle thread's.
-pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) {
-    create_tcb(thread_entry, stack_size, priority);
+/// scheduler starts). `priority` 0 is highest, 7 is the idle thread's. Returns
+/// the new thread's id.
+pub fn os_add_thread(thread_entry: ThreadEntry, stack_size: usize, priority: u8) -> ThreadId {
+    create_tcb(thread_entry, stack_size, priority)
 }
 
 /// Kernel-internal yield. Handler mode only (SysTick, SVC, ISRs): PendSV has

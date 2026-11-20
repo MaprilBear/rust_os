@@ -1,5 +1,5 @@
 //! Peripheral drivers for the nRF52840. See Cargo.toml for where this code
-//! runs.
+//! runs and how it is tested.
 #![no_std]
 
 pub mod fifo;

@@ -4,13 +4,20 @@
 //! KFLASH), so threads can execute it after the MPU makes kernel flash
 //! privileged-only. It talks to the kernel solely through `svc`.
 //!
-//! Calling convention: r0, r1 are the arguments; a return value comes back in r0.
+//! Calling convention: the argument (if any) goes in r0; the return value comes
+//! back in r0.
+//!
+//! Also builds for a host OS (tests): see [`host`].
 #![no_std]
 
+#[cfg(target_os = "none")]
 use core::arch::asm;
 
 mod global;
 pub use global::Global;
+
+#[cfg(not(target_os = "none"))]
+pub mod host;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Syscall numbers (shared with the kernel's SVC dispatcher)
@@ -60,16 +67,33 @@ impl TryFrom<u8> for Syscall {
 /// No `options(...)` on purpose: the defaults (may read/write memory, may use
 /// the stack, clobbers flags) are right for a call into the kernel, which can
 /// write user memory and let other threads run before returning.
+///
+/// On a host build (tests) there is no `svc`: the call goes to the handler
+/// installed with `host::set_syscall_handler` (the kernel's test support).
 macro_rules! syscall {
     ($num:expr) => {{
-        let r0: usize;
-        unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, lateout("r0") r0) };
-        r0
+        #[cfg(target_os = "none")]
+        {
+            let r0: usize;
+            unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, lateout("r0") r0) };
+            r0
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            host::syscall($num as u8, 0)
+        }
     }};
     ($num:expr, $arg:expr) => {{
-        let r0: usize;
-        unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, inout("r0") $arg => r0) };
-        r0
+        #[cfg(target_os = "none")]
+        {
+            let r0: usize;
+            unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, inout("r0") $arg => r0) };
+            r0
+        }
+        #[cfg(not(target_os = "none"))]
+        {
+            host::syscall($num as u8, $arg)
+        }
     }};
 }
 
@@ -104,11 +128,18 @@ pub fn sys_fault() -> ! {
 /// IPSR is readable from unprivileged code. Nonzero means we are in an exception handler.
 #[inline(always)]
 pub fn in_handler_mode() -> bool {
-    let ipsr: u32;
-    unsafe {
-        asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags));
+    #[cfg(target_os = "none")]
+    {
+        let ipsr: u32;
+        unsafe {
+            asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags));
+        }
+        ipsr & 0x1FF != 0
     }
-    ipsr & 0x1FF != 0
+    #[cfg(not(target_os = "none"))]
+    {
+        host::in_handler_mode()
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -180,6 +211,11 @@ impl Semaphore {
 #[inline(never)]
 pub extern "C" fn idle_thread() -> ! {
     loop {
-        unsafe { asm!("wfe") };
+        #[cfg(target_os = "none")]
+        unsafe {
+            asm!("wfe")
+        };
+        #[cfg(not(target_os = "none"))]
+        core::hint::spin_loop();
     }
 }

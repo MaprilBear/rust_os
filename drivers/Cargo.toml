@@ -9,9 +9,15 @@ edition = "2021"
 # kernel directly: the IRQ API (`irq_set_priority`, `irq_enable`,
 # `irq_unpend`) and `give_from_isr`. Thread-facing methods reach the kernel
 # only through `userlib` syscalls.
+#
+# Builds for a host too: host tests point `Mmio` at fake register blocks in RAM
+# and drive the kernel through `kernel::test_support`.
 
 [dependencies]
 kernel = { path = "../kernel", default-features = false }
 userlib = { path = "../userlib" }
 bitfields = "3.2.1"
 saturating_cast = "0.1.0"
+
+[dev-dependencies]
+kernel = { path = "../kernel", features = ["test-support"] }
