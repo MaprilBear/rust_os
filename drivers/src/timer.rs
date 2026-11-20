@@ -133,3 +133,79 @@ impl Timer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::offset_of;
+
+    /// Offsets from the nRF52840 SVD (renode/nrf52840.svd).
+    #[test]
+    fn register_offsets_match_the_nrf52840() {
+        assert_eq!(offset_of!(TimerRegs, start), 0x000);
+        assert_eq!(offset_of!(TimerRegs, stop), 0x004);
+        assert_eq!(offset_of!(TimerRegs, count), 0x008);
+        assert_eq!(offset_of!(TimerRegs, clear), 0x00C);
+        assert_eq!(offset_of!(TimerRegs, shutdown), 0x010);
+        assert_eq!(offset_of!(TimerRegs, capture0), 0x040);
+        assert_eq!(offset_of!(TimerRegs, capture5), 0x054);
+        assert_eq!(offset_of!(TimerRegs, compare0), 0x140);
+        assert_eq!(offset_of!(TimerRegs, compare5), 0x154);
+        assert_eq!(offset_of!(TimerRegs, shorts), 0x200);
+        assert_eq!(offset_of!(TimerRegs, intenset), 0x304);
+        assert_eq!(offset_of!(TimerRegs, intenclear), 0x308);
+        assert_eq!(offset_of!(TimerRegs, mode), 0x504);
+        assert_eq!(offset_of!(TimerRegs, bitmode), 0x508);
+        assert_eq!(offset_of!(TimerRegs, prescaler), 0x510);
+        assert_eq!(offset_of!(TimerRegs, cc0), 0x540);
+        assert_eq!(offset_of!(TimerRegs, cc5), 0x554);
+    }
+
+    #[test]
+    fn field_bits_match_the_nrf52840() {
+        let shorts = |b: TimerShortBuilder| b.build().into_bits();
+        assert_eq!(
+            shorts(TimerShortBuilder::new().with_compare0_clear(true)),
+            1 << 0
+        );
+        assert_eq!(
+            shorts(TimerShortBuilder::new().with_compare5_clear(true)),
+            1 << 5
+        );
+        assert_eq!(
+            shorts(TimerShortBuilder::new().with_compare0_stop(true)),
+            1 << 8
+        );
+        assert_eq!(
+            shorts(TimerShortBuilder::new().with_compare5_stop(true)),
+            1 << 13
+        );
+        let int = |b: TimerIntBuilder| b.build().into_bits();
+        assert_eq!(int(TimerIntBuilder::new().with_compare0(true)), 1 << 16);
+        assert_eq!(int(TimerIntBuilder::new().with_compare5(true)), 1 << 21);
+        assert_eq!(TimerMode::LOWPOWER.0, 2);
+        assert_eq!(TimerBitmode::BIT_32.0, 3);
+        assert_eq!(TimerBitmode::BIT_08.0, 1);
+    }
+
+    #[test]
+    fn instances_point_at_their_peripherals() {
+        let base = |t: &Timer| t.regs.as_ptr() as usize;
+        assert_eq!(base(&TIMER0), 0x4000_8000);
+        assert_eq!(base(&TIMER1), 0x4000_9000);
+        assert_eq!(base(&TIMER2), 0x4000_A000);
+        assert_eq!(base(&TIMER3), 0x4001_A000);
+        assert_eq!(base(&TIMER4), 0x4001_B000);
+    }
+
+    /// Known issue 3: `semaphore!` inside `Timer::new` makes one kernel
+    /// object for every instance.
+    #[test]
+    #[ignore = "known issue 3: semaphore! in a const fn is shared by every instance"]
+    fn each_timer_has_its_own_semaphore() {
+        assert_ne!(
+            TIMER0.regs_semaphore.handle(),
+            TIMER1.regs_semaphore.handle()
+        );
+    }
+}

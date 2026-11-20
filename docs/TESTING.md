@@ -26,8 +26,9 @@ Run from the repository root (in the dev container):
 
 ```
 cargo xtask test-host     # tier 1
+cargo xtask test-loom     # tier 1, loom model checks (drivers, --cfg loom)
 cargo xtask test-renode   # tier 2 in Renode (today: renode/*.robot)
-cargo xtask test          # both
+cargo xtask test          # all of the above
 cargo xtask help          # everything else (build, check-placement, clippy, fmt)
 ```
 
@@ -131,6 +132,10 @@ What `kernel::test_support` gives you (its module docs have the details):
 | `irq` | IRQ numbers, attach/dispatch, enable/priority/unpend, lines above 31 |
 | `debugcon`, `test_support` | the log, and the test support itself (reset, bridge checks, `in_isr`) |
 | `userlib` | syscall numbers and wrappers, `Semaphore`, `Global` |
+| `drivers::fifo` | order, capacity, wrap-around, `pop_into`, two OS threads; loom model of SPSC |
+| `drivers::mmio` | `Reg`, `Task`, `Event`, count fields, `Mmio` |
+| `drivers::timer`, `ppi` | register maps and field bits against the SVD, base addresses |
+| `drivers::uarte` | register map, `init`, TX (DMA, ENDTX wake-up), RX (buffer swap, FIFO, overflow), handler corner cases |
 
 ### Tests for known issues
 
@@ -151,7 +156,24 @@ interrupt handler by hand. This only works on an instance the test builds
 itself: `UARTE0`, `uart_init()` and `uarte0_handler()` use the real address
 0x4000_2000 and would crash on a host. `Uarte::new` is private, so such tests
 live inside `uarte.rs`, and (until known issue 3 is fixed) any instance built
-that way shares its semaphores with `UARTE0`.
+that way shares its semaphores with `UARTE0`. `uart_init` is
+`UARTE0.init(irq)`, so the tests run `init` on their own instance (the `Fake`
+helper in `uarte.rs`).
+
+Host tests cannot check that `send` holds `regs_semaphore` across a whole
+transfer (a blocking `take` returns at once on the host), nor races between
+threads calling the driver; those are target tests.
+
+Register maps are checked field by field against the offsets and bit
+positions in the nRF52840 SVD (`renode/nrf52840.svd`), not against the
+comments in the structs.
+
+**loom** (`cargo xtask test-loom`): the drivers build with `--cfg loom`, which
+swaps the FIFO's atomics and slot cell for loom's (`Slot` in `fifo.rs`) and
+compiles `uarte` out (its statics need `const` constructors). Models live in
+`#[cfg(all(test, loom))] mod loom_tests`; keep them small, and bound
+preemptions if exploration takes more than a second or two. Check a new model
+by weakening an ordering and watching it fail.
 
 What host tests cannot see: real interrupt preemption (`cpsid i`, PendSV
 tail-chaining, an ISR landing inside `schedule()`). That is tier 2/3's job.
@@ -263,7 +285,7 @@ approval.
 3. [ ] Kernel model-based fuzzing (+ Miri, cargo-fuzz targets, nightly in the image)
 4. [ ] `ktest` harness and runner, in Renode
 5. [ ] Kernel target suites (scheduling, semaphores, syscalls, MPU attacks)
-6. [ ] Driver suites (host + target)
+6. [ ] Driver suites (host + target) (host part done)
 7. [ ] On-target stress fuzzing
 8. [ ] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT)
 9. [ ] CI (GitHub Actions, using the Dockerfile)
@@ -284,7 +306,7 @@ test before it is fixed. The tag says where that test can run.
    instance one kernel object: `UARTE0` and `UARTE1` share both semaphores
    (the map's `.ksem` holds only two `Uarte::new::KOBJ` objects), and the
    timers would share one.
-4. **[host]** `Uarte::receive` takes no lock, but its FIFO is single-consumer:
+4. **[target]** `Uarte::receive` takes no lock, but its FIFO is single-consumer:
    two threads calling it race inside `pop`.
 5. **[host]** `Timer` and `Ppi` expose `pub regs`, which bypasses their
    `regs_semaphore`, contrary to their `Sync` justification.
@@ -317,6 +339,18 @@ test before it is fixed. The tag says where that test can run.
     out-of-bounds index in the policy, after the TCB was added to the thread
     list, so a half-added thread remains. It should be rejected up front with
     a clear message.
+14. **[host]** `UarteRegs` swaps PSEL.TXD and PSEL.CTS: the nRF52840 has TXD
+    at 0x50C and CTS at 0x510. `uart_init` therefore connects CTS (with flow
+    control on, see 8) to P0.00 and leaves TXD disconnected, so nothing is
+    transmitted on hardware. Renode's UARTE model ignores PSEL.
+15. **[host]** `Uarte::send` saturates TXD.MAXCNT (16 bits), so a buffer over
+    65535 bytes is silently cut short. Splitting or rejecting it is an API
+    decision; today's behaviour is pinned by a test.
+16. **[DK]** `Uarte::send(&[])` starts a zero-length transfer and waits for
+    ENDTX. If the UARTE raises no ENDTX for MAXCNT = 0, the thread blocks
+    forever.
+17. **Cleanup:** TIMER0-2 have four CC registers (TIMER3/4 have six), but
+    `TimerRegs` gives every instance `cc4`/`cc5` and `compare4`/`compare5`.
 19. **[host]** A semaphore `give` wakes the oldest waiter; it should wake the
     highest-priority one (FIFO among equal priorities). Tests that rely on
     the order use waiters of equal priority until it is fixed.

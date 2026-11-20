@@ -6,4 +6,6 @@ pub mod fifo;
 pub mod mmio;
 pub mod ppi;
 pub mod timer;
+// Its statics need `const` constructors, which loom's types lack.
+#[cfg(not(loom))]
 pub mod uarte;

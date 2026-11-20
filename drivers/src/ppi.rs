@@ -167,3 +167,49 @@ impl Ppi {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::offset_of;
+
+    /// Offsets from the nRF52840 SVD (renode/nrf52840.svd).
+    #[test]
+    fn register_offsets_match_the_nrf52840() {
+        assert_eq!(offset_of!(PpiReg, chg0_en), 0x000);
+        assert_eq!(offset_of!(PpiReg, chg0_dis), 0x004);
+        assert_eq!(offset_of!(PpiReg, chg5_dis), 0x02C);
+        assert_eq!(offset_of!(PpiReg, chen), 0x500);
+        assert_eq!(offset_of!(PpiReg, chenset), 0x504);
+        assert_eq!(offset_of!(PpiReg, chenclear), 0x508);
+        assert_eq!(offset_of!(PpiReg, ch0_eep), 0x510);
+        assert_eq!(offset_of!(PpiReg, ch0_tep), 0x514);
+        assert_eq!(offset_of!(PpiReg, ch19_eep), 0x5A8);
+        assert_eq!(offset_of!(PpiReg, ch19_tep), 0x5AC);
+        assert_eq!(offset_of!(PpiReg, chg0), 0x800);
+        assert_eq!(offset_of!(PpiReg, chg5), 0x814);
+        assert_eq!(offset_of!(PpiReg, fork0_tep), 0x910);
+        assert_eq!(offset_of!(PpiReg, fork31_tep), 0x98C);
+    }
+
+    #[test]
+    fn channel_bits_match_the_nrf52840() {
+        assert_eq!(
+            ChannelRegBuilder::new().with_ch0(true).build().into_bits(),
+            1
+        );
+        assert_eq!(
+            ChannelRegBuilder::new().with_ch19(true).build().into_bits(),
+            1 << 19
+        );
+        assert_eq!(
+            ChannelRegBuilder::new().with_ch31(true).build().into_bits(),
+            1 << 31
+        );
+    }
+
+    #[test]
+    fn instance_points_at_the_peripheral() {
+        assert_eq!(PPI.regs.as_ptr() as usize, 0x4001_F000);
+    }
+}

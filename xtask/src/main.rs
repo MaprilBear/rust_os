@@ -51,6 +51,12 @@ const COMMANDS: &[Cmd] = &[
         run: test_host,
     },
     Cmd {
+        name: "test-loom",
+        usage: "test-loom [-- <test binary args>]\n    \
+                loom model checks of the drivers' lock-free code (--cfg loom, release)",
+        run: test_loom,
+    },
+    Cmd {
         name: "test-renode",
         usage: "test-renode [-- <renode-test args> <suite.robot>...]\n    \
                 build (debug) and run the Robot suites in Renode: renode/*.robot and\n    \
@@ -59,7 +65,7 @@ const COMMANDS: &[Cmd] = &[
     },
     Cmd {
         name: "test",
-        usage: "test\n    test-host, then test-renode",
+        usage: "test\n    test-host, test-loom, then test-renode",
         run: test_all,
     },
     Cmd {
@@ -130,10 +136,35 @@ fn build(args: &[String]) -> Result {
 fn test_host(args: &[String]) -> Result {
     let opts = Opts::parse(args, &[], &[])?;
     let mut cmd = cargo();
-    cmd.arg("test").args(["--target", "host-tuple"]);
+    // --no-fail-fast: every crate's tests run even if an earlier crate fails
+    // (`-- --ignored` fails in each crate with known issues). --all-targets
+    // leaves out doc tests: the docs' examples are `ignore`d sketches, which
+    // `--ignored` would otherwise try to compile.
+    cmd.args([
+        "test",
+        "--no-fail-fast",
+        "--all-targets",
+        "--target",
+        "host-tuple",
+    ]);
     for krate in HOST_TEST_CRATES {
         cmd.args(["-p", krate]);
     }
+    if !opts.passthrough.is_empty() {
+        cmd.arg("--").args(&opts.passthrough);
+    }
+    run(&mut cmd)
+}
+
+fn test_loom(args: &[String]) -> Result {
+    let opts = Opts::parse(args, &[], &[])?;
+    let mut cmd = cargo();
+    // Its own target dir: --cfg loom changes every crate's build, and sharing
+    // target/ would rebuild the host tests from scratch each time.
+    cmd.args(["test", "--release", "--target", "host-tuple"])
+        .args(["-p", "drivers", "--lib", "--target-dir"])
+        .arg(root().join("target/loom"))
+        .env("RUSTFLAGS", "--cfg loom");
     if !opts.passthrough.is_empty() {
         cmd.arg("--").args(&opts.passthrough);
     }
@@ -182,6 +213,7 @@ fn test_renode(args: &[String]) -> Result {
 fn test_all(args: &[String]) -> Result {
     Opts::parse(args, &[], &[])?;
     test_host(&[])?;
+    test_loom(&[])?;
     test_renode(&[])
 }
 
@@ -207,6 +239,22 @@ fn clippy(args: &[String]) -> Result {
     }
     lint_args(&mut host);
     run(&mut host)?;
+
+    // The drivers as `test-loom` builds them.
+    let mut loom = cargo();
+    loom.args([
+        "clippy",
+        "--tests",
+        "--target",
+        "host-tuple",
+        "-p",
+        "drivers",
+    ])
+    .arg("--target-dir")
+    .arg(root().join("target/loom"))
+    .env("RUSTFLAGS", "--cfg loom");
+    lint_args(&mut loom);
+    run(&mut loom)?;
 
     let mut xtask = cargo();
     xtask.args(["clippy", "--target", "host-tuple", "--manifest-path"]);
