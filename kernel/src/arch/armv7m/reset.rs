@@ -3,7 +3,8 @@ use core::{
     ptr::{addr_of, addr_of_mut},
 };
 
-use crate::{os_init, os_start, vectors::CORE_PERIPHERALS};
+use super::take_core_peripherals;
+use crate::os_init;
 
 unsafe extern "C" {
     /// Provided by the application (`#[no_mangle] pub extern "C" fn user_main()`).
@@ -186,11 +187,20 @@ pub extern "C" fn ResetHandler() -> ! {
     dprintln!("entered reset");
     unsafe { initialize_memory() };
     unsafe { mpu_init() };
-    unsafe {
-        *CORE_PERIPHERALS.as_ptr() = Some(cortex_m::peripheral::Peripherals::take().unwrap())
-    };
+    take_core_peripherals();
     os_init();
     unsafe { user_main() };
     dprintln!("kernel booted");
     os_start();
+}
+
+/// Called once from privileged boot code. Boot code cannot drop privilege
+/// itself: after `msr control` the next instruction would already run
+/// unprivileged on the kernel stack. Instead we trap into SVC, where handler
+/// mode sets nPRIV and PendSV exception-returns into the first thread.
+fn os_start() -> ! {
+    // The SVC handler writes a return value into the stacked r0 (see
+    // userlib's syscall! macro), so r0 must be declared clobbered here too.
+    unsafe { asm!("svc #0", lateout("r0") _) };
+    panic!("os_start should never return");
 }

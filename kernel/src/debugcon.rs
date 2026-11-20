@@ -15,19 +15,14 @@
 //! first instruction of `Reset`.
 
 use core::fmt::{self, Write};
-use core::ptr::write_volatile;
 
 /// Whether the console is compiled in. The macros test this rather than
 /// `cfg!(feature = "debugcon")`, which would be evaluated in the calling crate.
 pub const ENABLED: bool = cfg!(feature = "debugcon");
 
-/// Must match the address in `renode/nrf52840.repl`.
-const DEBUGCON: *mut u32 = 0x6000_0000 as *mut u32;
-
-/// Send one byte. 32-bit write, because the Renode peripheral is a single
-/// 4-byte register.
+/// Send one byte (`arch::log_putc` knows where the console is).
 pub fn putc(byte: u8) {
-    unsafe { write_volatile(DEBUGCON, byte as u32) }
+    crate::arch::log_putc(byte)
 }
 
 /// Lets `core::fmt` write to the debug console.

@@ -7,22 +7,17 @@
 //! The table is placed in `.vector_table`, which `link.ld` puts at address 0.
 //!
 //! Every external interrupt goes through `irq_dispatch`, which looks up the
-//! handler the application registered with `irq_attach`. That keeps driver code
+//! handler the application registered with `irq_attach` (`crate::irq`). That keeps driver code
 //! (in the `drivers` and `app` crates, user flash) out of the kernel crate.
 use core::arch::{asm, global_asm};
 
-use cortex_m::Peripherals;
-use userlib::Global;
-
-use crate::reset::ResetHandler;
-use crate::SystickHandler;
+use super::halt;
+use super::reset::ResetHandler;
+use crate::irq::{self, NUM_IRQS};
 extern "C" {
     /// Top of RAM, defined in `link.ld`.
     static _estack: u32;
 }
-
-/// Number of external interrupt lines on the nRF52840.
-const NUM_IRQS: usize = 48;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -69,7 +64,7 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
         handler(default_handler),   // 12 DebugMonitor
         RESERVED,                   // 13
         handler(PendSVHandler),     // 14 PendSV
-        handler(SystickHandler),    // 15 SysTick
+        handler(systick_handler),   // 15 SysTick
     ],
     irqs: [
         handler(irq_dispatch), // 0 POWER_CLOCK
@@ -123,113 +118,9 @@ pub static VECTOR_TABLE: VectorTable = VectorTable {
     ],
 };
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u16)]
-#[allow(non_camel_case_types)]
-#[allow(dead_code)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum Interrupt {
-    #[doc = "0 - POWER_CLOCK"]
-    POWER_CLOCK = 0,
-    #[doc = "1 - RADIO"]
-    RADIO = 1,
-    #[doc = "2 - UARTE0_UART0"]
-    UARTE0_UART0 = 2,
-    #[doc = "3 - SPIM0_SPIS0_TWIM0_TWIS0_SPI0_TWI0"]
-    SPIM0_SPIS0_TWIM0_TWIS0_SPI0_TWI0 = 3,
-    #[doc = "4 - SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1"]
-    SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1 = 4,
-    #[doc = "5 - NFCT"]
-    NFCT = 5,
-    #[doc = "6 - GPIOTE"]
-    GPIOTE = 6,
-    #[doc = "7 - SAADC"]
-    SAADC = 7,
-    #[doc = "8 - TIMER0"]
-    TIMER0 = 8,
-    #[doc = "9 - TIMER1"]
-    TIMER1 = 9,
-    #[doc = "10 - TIMER2"]
-    TIMER2 = 10,
-    #[doc = "11 - RTC0"]
-    RTC0 = 11,
-    #[doc = "12 - TEMP"]
-    TEMP = 12,
-    #[doc = "13 - RNG"]
-    RNG = 13,
-    #[doc = "14 - ECB"]
-    ECB = 14,
-    #[doc = "15 - CCM_AAR"]
-    CCM_AAR = 15,
-    #[doc = "16 - WDT"]
-    WDT = 16,
-    #[doc = "17 - RTC1"]
-    RTC1 = 17,
-    #[doc = "18 - QDEC"]
-    QDEC = 18,
-    #[doc = "19 - COMP_LPCOMP"]
-    COMP_LPCOMP = 19,
-    #[doc = "20 - SWI0_EGU0"]
-    SWI0_EGU0 = 20,
-    #[doc = "21 - SWI1_EGU1"]
-    SWI1_EGU1 = 21,
-    #[doc = "22 - SWI2_EGU2"]
-    SWI2_EGU2 = 22,
-    #[doc = "23 - SWI3_EGU3"]
-    SWI3_EGU3 = 23,
-    #[doc = "24 - SWI4_EGU4"]
-    SWI4_EGU4 = 24,
-    #[doc = "25 - SWI5_EGU5"]
-    SWI5_EGU5 = 25,
-    #[doc = "26 - TIMER3"]
-    TIMER3 = 26,
-    #[doc = "27 - TIMER4"]
-    TIMER4 = 27,
-    #[doc = "28 - PWM0"]
-    PWM0 = 28,
-    #[doc = "29 - PDM"]
-    PDM = 29,
-    #[doc = "32 - MWU"]
-    MWU = 32,
-    #[doc = "33 - PWM1"]
-    PWM1 = 33,
-    #[doc = "34 - PWM2"]
-    PWM2 = 34,
-    #[doc = "35 - SPIM2_SPIS2_SPI2"]
-    SPIM2_SPIS2_SPI2 = 35,
-    #[doc = "36 - RTC2"]
-    RTC2 = 36,
-    #[doc = "37 - I2S"]
-    I2S = 37,
-    #[doc = "38 - FPU"]
-    FPU = 38,
-    #[doc = "39 - USBD"]
-    USBD = 39,
-    #[doc = "40 - UARTE1"]
-    UARTE1 = 40,
-    #[doc = "41 - QSPI"]
-    QSPI = 41,
-    #[doc = "42 - CRYPTOCELL"]
-    CRYPTOCELL = 42,
-    #[doc = "45 - PWM3"]
-    PWM3 = 45,
-    #[doc = "47 - SPIM3"]
-    SPIM3 = 47,
-}
-unsafe impl cortex_m::interrupt::InterruptNumber for Interrupt {
-    #[inline(always)]
-    fn number(self) -> u16 {
-        self as u16
-    }
-}
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // External interrupt dispatch
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
-/// Handlers registered by the application, indexed by IRQ number. Lives in kernel
-/// RAM, so only privileged code can change it.
-static IRQ_TABLE: Global<[Option<extern "C" fn()>; NUM_IRQS]> = Global::new([None; NUM_IRQS]);
 
 /// Common entry for every external interrupt. Runs privileged (handler mode).
 extern "C" fn irq_dispatch() {
@@ -237,65 +128,9 @@ extern "C" fn irq_dispatch() {
     unsafe { asm!("mrs {}, ipsr", out(reg) ipsr, options(nomem, nostack, preserves_flags)) };
     // Exception number 16 is IRQ 0.
     let irq = (ipsr & 0x1FF).wrapping_sub(16) as usize;
-    match unsafe { (*IRQ_TABLE.as_ptr()).get(irq).copied().flatten() } {
+    match irq::handler_for(irq) {
         Some(h) => h(),
         None => default_handler(),
-    }
-}
-
-/// Route `irq` to `handler`. Call from `user_main` (privileged, before the
-/// scheduler starts), before enabling the interrupt in the NVIC. The handler
-/// runs privileged, but its code must live in user flash (the `drivers` or
-/// `app` crate).
-pub fn irq_attach(irq: Interrupt, handler: extern "C" fn()) {
-    assert!(
-        crate::is_user_text(handler as usize),
-        "IRQ handler is not in user text"
-    );
-    cortex_m::interrupt::free(|_| unsafe {
-        (*IRQ_TABLE.as_ptr())[irq as usize] = Some(handler);
-    });
-}
-
-// SAFETY (for the NVIC functions below): cortex-m marks priority changes and
-// unmasking `unsafe` because they can break critical sections built on BASEPRI
-// or on masking individual interrupts. This kernel's critical sections use
-// PRIMASK only (`critical_section` / `interrupt::free`), which neither
-// operation affects, so they are safe to expose.
-
-/// Set the NVIC priority of `irq` (nRF52840: the top 3 bits count, 0x00 is
-/// highest). Privileged code only (`user_main` or an ISR).
-pub fn irq_set_priority(irq: Interrupt, priority: u8) {
-    // Write IPR directly instead of going through `core_periph()`, which would
-    // create a second `&mut Peripherals` if called from an ISR.
-    let nvic = cortex_m::peripheral::NVIC::PTR;
-    unsafe { (*nvic).ipr[irq as usize].write(priority) };
-}
-
-/// Enable `irq` in the NVIC. Privileged code only. Panics if no handler is
-/// attached (`irq_attach`): the interrupt would end up in `default_handler`,
-/// which spins forever.
-pub fn irq_enable(irq: Interrupt) {
-    let attached =
-        cortex_m::interrupt::free(|_| unsafe { (*IRQ_TABLE.as_ptr())[irq as usize].is_some() });
-    assert!(attached, "irq_enable before irq_attach");
-    unsafe { cortex_m::peripheral::NVIC::unmask(irq) };
-}
-
-/// Clear `irq`'s pending bit in the NVIC. Privileged code only.
-pub fn irq_unpend(irq: Interrupt) {
-    cortex_m::peripheral::NVIC::unpend(irq);
-}
-
-pub static CORE_PERIPHERALS: Global<Option<Peripherals>> = Global::new(None);
-
-pub fn core_periph() -> &'static mut Peripherals {
-    // Safety: single core; caller must not hold two of these at once
-    // and must not use it from an ISR while thread code holds it.
-    unsafe {
-        (*CORE_PERIPHERALS.as_ptr())
-            .as_mut()
-            .expect("CORE not initialized")
     }
 }
 
@@ -308,9 +143,16 @@ pub fn core_periph() -> &'static mut Peripherals {
 /// and check `sysbus.cpu PC`.
 pub extern "C" fn default_handler() {
     dprintln!("Exception!");
-    #[allow(clippy::empty_loop)]
-    loop {}
+    halt("unexpected exception");
 }
+
+/// One scheduler tick (1 ms).
+extern "C" fn systick_handler() {
+    crate::os_tick();
+}
+
+// PendSV saves/loads a thread's SP at byte offset 4 of its TCB.
+const _: () = assert!(core::mem::offset_of!(crate::TCB, sp) == 4);
 
 // This handler returns via EXC_RETURN, so it must not have a Rust prologue.
 global_asm!(
@@ -356,8 +198,7 @@ pub extern "C" fn memmanage_handler() {
     let cfsr = unsafe { core::ptr::read_volatile(0xE000_ED28 as *const u32) };
     let mmfar = unsafe { core::ptr::read_volatile(0xE000_ED34 as *const u32) };
     dprintln!("MemManage: CFSR={:#x} MMFAR={:#x}", cfsr, mmfar);
-    #[allow(clippy::empty_loop)]
-    loop {}
+    halt("MemManage fault");
 }
 
 unsafe extern "C" {

@@ -62,12 +62,12 @@ impl TryFrom<u8> for Syscall {
 /// write user memory and let other threads run before returning.
 macro_rules! syscall {
     ($num:expr) => {{
-        let r0: u32;
+        let r0: usize;
         unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, lateout("r0") r0) };
         r0
     }};
     ($num:expr, $arg:expr) => {{
-        let r0: u32;
+        let r0: usize;
         unsafe { core::arch::asm!("svc #{n}", n = const $num as u8, inout("r0") $arg => r0) };
         r0
     }};
@@ -80,14 +80,14 @@ pub fn sys_yield() {
 
 #[inline(always)]
 pub fn sys_sleep(ms: u32) {
-    syscall!(Syscall::Sleep, ms);
+    syscall!(Syscall::Sleep, ms as usize);
 }
 
-pub fn sys_sem_take(handle: u32) -> u32 {
+pub fn sys_sem_take(handle: usize) -> usize {
     syscall!(Syscall::SemTake, handle)
 }
 
-pub fn sys_sem_give(handle: u32) -> u32 {
+pub fn sys_sem_give(handle: usize) -> usize {
     syscall!(Syscall::SemGive, handle)
 }
 
@@ -136,8 +136,8 @@ impl Semaphore {
         Self { kobj }
     }
 
-    pub fn handle(&self) -> u32 {
-        self.kobj as usize as u32
+    pub fn handle(&self) -> usize {
+        self.kobj as usize
     }
 
     /// Blocks the calling thread if the count is exhausted. Thread context only.
