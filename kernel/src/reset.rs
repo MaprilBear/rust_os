@@ -144,7 +144,7 @@ unsafe fn disable_region(n: u32) {
 
 /// true: kernel flash (KFLASH, which holds only this crate, see link.ld) is
 ///   privileged-only. Unprivileged threads may only execute user flash: the
-///   `userlib`/`app` crates and shared dependencies (`core`, `alloc`,
+///   `userlib`/`drivers`/`app` crates and shared dependencies (`core`, `alloc`,
 ///   `compiler_builtins`, ...), which the linker places there. A thread that
 ///   calls into the kernel crate takes a MemManage fault; the stacked PC/MMFAR
 ///   show where.

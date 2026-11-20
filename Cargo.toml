@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kernel", "userlib", "app"]
+members = ["kernel", "userlib", "drivers", "app"]
 default-members = ["app"]
 
 # Profiles only take effect at the workspace root.

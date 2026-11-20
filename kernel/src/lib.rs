@@ -24,7 +24,9 @@ mod vectors;
 extern crate alloc;
 
 pub use semaphore::give_from_isr;
-pub use vectors::{core_periph, irq_attach, Interrupt};
+pub use vectors::{irq_attach, irq_enable, irq_set_priority, irq_unpend, Interrupt};
+
+use vectors::core_periph;
 
 use bitfields::bitflag;
 use core::alloc::{GlobalAlloc, Layout};

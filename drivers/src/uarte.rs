@@ -97,7 +97,7 @@ struct UartPsel {
 #[repr(transparent)]
 struct UartBaudRate(u32);
 
-#[allow(unused)]
+#[allow(unused)] // the full table, though only some rates are used
 impl UartBaudRate {
     const B1200: Self = Self(0x0004_F000);
     const B2400: Self = Self(0x0009_D000);
@@ -210,7 +210,6 @@ struct UarteRegs {
 }
 
 const UART0E_BASE: usize = 0x40002000;
-#[allow(unused)]
 const UART1E_BASE: usize = 0x40028000;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -233,7 +232,6 @@ pub struct Uarte {
 }
 
 pub static UARTE0: Uarte = unsafe { Uarte::new(UART0E_BASE) };
-#[allow(unused)]
 pub static UARTE1: Uarte = unsafe { Uarte::new(UART1E_BASE) };
 
 impl Uarte {
@@ -256,7 +254,7 @@ impl Uarte {
         regs.txd.ptr.write(buffer.as_ptr() as u32);
         regs.txd.maxcnt.write(
             Count16Builder::new()
-                .with_count(buffer.len().saturating_cast::<u16>())
+                .with_count(SaturatingCast::saturating_cast::<u16>(buffer.len()))
                 .build(),
         );
 
@@ -274,7 +272,7 @@ impl Uarte {
     /// Read bytes into the provided buffer until full, or until the given timeout is exceeded.
     /// Returns the number of bytes received.
     pub fn receive(&self, buffer: &mut [u8]) -> u16 {
-        self.rx_fifo.pop_into(buffer).saturating_cast::<u16>()
+        SaturatingCast::saturating_cast::<u16>(self.rx_fifo.pop_into(buffer))
     }
 
     fn handle_interrupt(&self) {
@@ -309,7 +307,7 @@ impl Uarte {
 
 pub extern "C" fn uarte0_handler() {
     // Acknowledge the interrupt
-    cortex_m::peripheral::NVIC::unpend(Interrupt::UARTE0_UART0);
+    kernel::irq_unpend(Interrupt::UARTE0_UART0);
 
     // Let the UARTE peripheral handle the interrupt
     UARTE0.handle_interrupt();
@@ -318,11 +316,12 @@ pub extern "C" fn uarte0_handler() {
 use bitfields::{bitfield, bitflag};
 use saturating_cast::SaturatingCast;
 
-use kernel::{core_periph, Interrupt};
+use kernel::Interrupt;
 use userlib::Semaphore;
 
-/// # Safety
-/// This function should not be called post-OS initialization.
+/// Configure UARTE0 and start background reception. Call once, from `user_main`
+/// (privileged, before the scheduler starts), after attaching `uarte0_handler`
+/// with `kernel::irq_attach`.
 pub fn uart_init() {
     // Setup a basic non conflicting PSEL config (no RTS/CTS)
     // TODO: Allow this to be user defined
@@ -356,14 +355,13 @@ pub fn uart_init() {
     let uart_enable = UartEnableBuilder::new().with_enable(true).build();
     regs.enable.write(uart_enable);
 
-    let core_periph = core_periph();
-    unsafe { core_periph.NVIC.set_priority(Interrupt::UARTE0_UART0, 0xC0) };
+    kernel::irq_set_priority(Interrupt::UARTE0_UART0, 0xC0);
     // Enable interrupts for ENDRX to handle double buffer switching
     regs.intenset
         .write(UartInterruptBuilder::new().with_endrx(true).build());
 
     // enable the interrupt in NVIC
-    unsafe { cortex_m::peripheral::NVIC::unmask(Interrupt::UARTE0_UART0) };
+    kernel::irq_enable(Interrupt::UARTE0_UART0);
     // begin the background RX process
     regs.rxd.ptr.write(UARTE0.rx_buffer_1.as_ptr() as u32);
     regs.rxd

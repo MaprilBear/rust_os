@@ -1,3 +1,7 @@
+// `Result<_, ()>`: full/empty carry no further information. Whether to give the
+// FIFO real error types is to be decided when its tests are written.
+#![allow(clippy::result_unit_err)]
+
 use core::{cell::UnsafeCell, sync::atomic::AtomicUsize};
 
 pub struct Fifo<T: Copy, const S: usize, P: FifoPolicy<T>> {
@@ -56,6 +60,12 @@ impl LockFreePolicy {
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
         }
+    }
+}
+
+impl Default for LockFreePolicy {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
