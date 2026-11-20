@@ -30,7 +30,6 @@ use bitfields::bitflag;
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::ptr::addr_of;
-use cortex_m as _;
 use embedded_alloc::TlsfHeap as Heap;
 
 use crate::scheduler::{scheduler, Scheduler};
@@ -231,9 +230,7 @@ fn os_start() -> ! {
 /// active. A plain volatile store; the previous inline asm wrote r0/r1 without
 /// declaring them, which corrupted live registers wherever it was inlined.
 pub extern "C" fn context_switch() {
-    const ICSR: *mut u32 = 0xE000_ED04 as *mut u32;
-    const PENDSVSET: u32 = 1 << 28;
-    unsafe { ICSR.write_volatile(PENDSVSET) };
+    cortex_m::peripheral::SCB::set_pendsv();
 }
 
 /// Kernel-internal yield. Handler mode only (SysTick, SVC, ISRs): PendSV has
@@ -249,6 +246,5 @@ extern "C" fn pick_next_thread() {
 }
 
 pub fn os_get_frc() -> u32 {
-    let core_periph = core_periph();
-    core_periph.SYST.cvr.read()
+    cortex_m::peripheral::SYST::get_current()
 }
