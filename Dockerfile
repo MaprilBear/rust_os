@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-pip \
         python3-venv \
         sudo \
+        libudev-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Renode (portable Linux build, bundles the dotnet runtime) --------------

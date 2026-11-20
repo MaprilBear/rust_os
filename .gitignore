@@ -7,3 +7,5 @@ robot_output.xml
 
 /.vscode/
 /.idea/
+# CI's cargo registry cache (.github/workflows/ci.yml)
+/.ci-cargo-home/

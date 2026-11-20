@@ -472,6 +472,28 @@ Miri and cargo-fuzz need nightly. The dev container has it next to stable
   Best for hostile interfaces such as the syscall surface. Nightly; run on
   demand or nightly in CI, not on every build.
 
+## CI
+
+`.github/workflows/ci.yml` runs everything inside the dev-container image
+(the Dockerfile, built with the GitHub Actions cache), so CI has the same
+toolchains, Renode and Robot as the dev container:
+
+- **Every push and pull request** (`checks`): `fmt --check`,
+  `clippy -- -D warnings`, `test-host`, `test-loom`, debug and release
+  firmware builds (placement-checked) and `test-renode`. Robot's results are
+  also converted to JUnit (`rebot --xunit`) and uploaded with the reports.
+- **Nightly and on demand** (`nightly`): `miri`, ten minutes of `fuzz` (the
+  corpus is cached between runs) and the `stress` sweep, each run even if an
+  earlier one failed; fuzz crashes and Renode reports are uploaded on
+  failure.
+
+The Dockerfile's base image (`rust:1-trixie`) is not pinned, so when it
+updates the image cache misses and CI rebuilds the image (Renode, the
+nightly toolchain, cargo-fuzz and probe-rs), which takes a while.
+
+The hardware runner needs a DK, so it is not in CI; a self-hosted runner
+with the board attached could run `cargo xtask test-hw`.
+
 ## Roadmap
 
 Every test step starts with a list of test cases for review; code follows
@@ -486,7 +508,7 @@ approval.
 6. [x] Driver suites (host + target)
 7. [x] On-target stress fuzzing
 8. [x] Hardware runner (`cargo xtask test-hw`, probe-rs + RTT); not yet run on a DK
-9. [ ] CI (GitHub Actions, using the Dockerfile)
+9. [x] CI (GitHub Actions, using the Dockerfile)
 
 ## Known issues to confirm with tests
 
