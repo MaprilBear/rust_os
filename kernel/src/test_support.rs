@@ -267,3 +267,138 @@ pub fn set_flash_range(r: Range<usize>) {
 pub fn set_uram_range(r: Range<usize>) {
     port::set_uram_range(r)
 }
+
+/// Tests of the test support itself: if these break, kernel tests can pass
+/// for the wrong reason.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    static SEM: userlib::Semaphore = crate::semaphore!(1);
+
+    extern "C" fn handler() {}
+
+    #[test]
+    fn lock_resets_threads_ranges_and_the_port() {
+        {
+            let _k = lock();
+            boot();
+            spawn(1);
+            context_switch();
+            userlib::sys_yield();
+            register_semaphore(&SEM);
+            set_ksem_range(0x10..0x20);
+            set_flash_range(0x0..0x1000);
+            set_uram_range(0x2000..0x3000);
+            crate::irq_attach(Interrupt::RTC0, handler);
+            crate::irq_enable(Interrupt::RTC0);
+            crate::irq_set_priority(Interrupt::RTC0, 0x40);
+            crate::irq_unpend(Interrupt::RTC0);
+            set_user_text_range(0x100..0x200);
+            dispatch(userlib::Syscall::Start as u8, 0, Caller::Boot);
+            crate::dprint!("x");
+        }
+        let _k = lock();
+        assert_eq!(current(), None);
+        assert_eq!(thread_state(0), None);
+        assert!(!pendsv_pending());
+        assert!(!systick_started());
+        assert_eq!(take_log(), "");
+        assert_eq!(crate::arch::ksem_range(), 0..0);
+        assert_eq!(crate::arch::user_text_range(), 0..usize::MAX);
+        assert_eq!(crate::arch::flash_range(), 0..0);
+        assert_eq!(crate::arch::uram_range(), 0..0);
+        assert!(!nvic_is_enabled(Interrupt::RTC0));
+        assert_eq!(nvic_priority(Interrupt::RTC0), 0);
+        assert_eq!(nvic_unpend_count(Interrupt::RTC0), 0);
+        assert!(crate::irq::handler_for(Interrupt::RTC0 as usize).is_none());
+        assert!(
+            matches!(
+                crate::semaphore::ksem_take(SEM.handle()),
+                crate::semaphore::TakeResult::Error
+            ),
+            "registered handles are forgotten"
+        );
+        assert_eq!(
+            dispatch(userlib::Syscall::Start as u8, 0, Caller::Boot),
+            0,
+            "Start allowed again"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "no running thread")]
+    fn syscall_without_a_running_thread_panics() {
+        let _k = lock();
+        boot();
+        userlib::sys_yield();
+    }
+
+    #[test]
+    #[should_panic(expected = "from an interrupt handler")]
+    fn syscall_from_an_isr_panics() {
+        let _k = lock();
+        boot();
+        context_switch();
+        in_isr(userlib::sys_yield);
+    }
+
+    #[test]
+    #[should_panic(expected = "no host syscall handler installed")]
+    fn syscall_after_the_guard_is_dropped_panics() {
+        drop(lock());
+        // Hold the raw mutex (not a guard) so no other test can install the
+        // bridge meanwhile. The last guard dropped must have uninstalled it.
+        let _raw = KERNEL_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        userlib::sys_yield();
+    }
+
+    #[test]
+    fn in_isr_nests_and_restores_thread_mode_even_on_panic() {
+        let _k = lock();
+        in_isr(|| {
+            in_isr(|| assert!(userlib::in_handler_mode()));
+            assert!(userlib::in_handler_mode(), "still in the outer handler");
+        });
+        assert!(!userlib::in_handler_mode());
+        let r = catch_unwind(AssertUnwindSafe(|| in_isr(|| panic!("boom"))));
+        assert!(r.is_err());
+        assert!(!userlib::in_handler_mode());
+    }
+
+    #[test]
+    fn run_pending_switch_runs_only_when_requested() {
+        let _k = lock();
+        boot();
+        assert!(!run_pending_switch());
+        assert_eq!(current(), None);
+        tick();
+        assert!(run_pending_switch());
+        assert_eq!(current(), Some(0));
+        assert!(!pendsv_pending());
+    }
+
+    #[test]
+    fn a_panicking_test_does_not_poison_the_lock() {
+        let r = std::thread::spawn(|| {
+            let _k = lock();
+            panic!("test failure while holding the kernel");
+        })
+        .join();
+        assert!(r.is_err());
+        let _k = lock();
+        boot();
+        assert_eq!(context_switch(), Some(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not hold test_support::lock()")]
+    fn using_the_kernel_without_the_lock_panics() {
+        let _k = lock();
+        std::thread::spawn(boot)
+            .join()
+            .map_err(|e| std::panic::resume_unwind(e))
+            .unwrap();
+    }
+}
