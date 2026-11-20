@@ -309,15 +309,13 @@ impl Uarte {
 
 pub extern "C" fn uarte0_handler() {
     // Acknowledge the interrupt
-    let core_periph = core_periph();
-    unsafe { core_periph.NVIC.icpr[0].write(1 << Interrupt::UARTE0_UART0.number()) };
+    cortex_m::peripheral::NVIC::unpend(Interrupt::UARTE0_UART0);
 
     // Let the UARTE peripheral handle the interrupt
     UARTE0.handle_interrupt();
 }
 
 use bitfields::{bitfield, bitflag};
-use cortex_m::interrupt::InterruptNumber;
 use saturating_cast::SaturatingCast;
 
 use kernel::{core_periph, Interrupt};
@@ -365,7 +363,7 @@ pub fn uart_init() {
         .write(UartInterruptBuilder::new().with_endrx(true).build());
 
     // enable the interrupt in NVIC
-    unsafe { core_periph.NVIC.iser[0].modify(|w| w | (1 << Interrupt::UARTE0_UART0.number())) };
+    unsafe { cortex_m::peripheral::NVIC::unmask(Interrupt::UARTE0_UART0) };
     // begin the background RX process
     regs.rxd.ptr.write(UARTE0.rx_buffer_1.as_ptr() as u32);
     regs.rxd

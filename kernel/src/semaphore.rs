@@ -32,7 +32,7 @@ use core::cell::UnsafeCell;
 use core::mem::size_of;
 use core::ptr::addr_of;
 
-use crate::scheduler::{scheduler, Scheduler, CURR_TCB};
+use crate::scheduler::{scheduler, Scheduler};
 use crate::{os_yield, ThreadId};
 
 unsafe extern "C" {
@@ -116,19 +116,18 @@ pub fn ksem_take(handle: u32) -> TakeResult {
             return TakeResult::Error;
         };
         let st = unsafe { &mut *sem.state.get() };
-        if st.count <= 0 && unsafe { CURR_TCB.is_null() } {
-            return TakeResult::Error; // would block, but there is no thread to block
+        if st.count > 0 {
+            st.count -= 1;
+            return TakeResult::Acquired;
         }
+        // Would block: only a running thread can.
+        let Some(current) = (unsafe { scheduler().current_thread() }) else {
+            return TakeResult::Error;
+        };
         st.count -= 1;
-        if st.count < 0 {
-            unsafe {
-                scheduler().block();
-                st.waiters.push_back(scheduler().current_thread());
-            }
-            TakeResult::Blocked
-        } else {
-            TakeResult::Acquired
-        }
+        unsafe { scheduler().block() };
+        st.waiters.push_back(current);
+        TakeResult::Blocked
     })
 }
 

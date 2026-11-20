@@ -76,8 +76,10 @@ mod syscall_impl {
     /// The calling thread cannot continue (e.g. it panicked). There is no thread
     /// teardown yet, so halt like the MemManage handler does.
     pub(super) fn fault() -> ! {
-        let id = unsafe { scheduler().current_thread() };
-        dprintln!("thread {} faulted", id);
+        match unsafe { scheduler().current_thread() } {
+            Some(id) => dprintln!("thread {} faulted", id),
+            None => dprintln!("fault reported with no running thread"),
+        }
         #[allow(clippy::empty_loop)]
         loop {}
     }
@@ -99,7 +101,10 @@ mod syscall_impl {
     }
 
     pub(super) fn sleep(ms: u32) -> u32 {
-        unsafe { scheduler().sleep(ms) };
+        // Only a running thread can sleep (not boot code).
+        if !unsafe { scheduler().sleep(ms) } {
+            return 1;
+        }
         os_yield();
         0
     }

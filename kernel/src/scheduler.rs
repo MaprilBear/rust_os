@@ -17,10 +17,13 @@ pub trait Scheduler {
     #[allow(dead_code)]
     fn remove_thread(&mut self, thread: ThreadId);
     fn tick(&mut self);
-    fn sleep(&mut self, ms: u32);
+    /// Put the running thread to sleep. False if there is no running thread.
+    fn sleep(&mut self, ms: u32) -> bool;
+    /// Mark the running thread blocked (no-op if there is none).
     fn block(&mut self);
     fn unblock(&mut self, thread: ThreadId);
-    fn current_thread(&self) -> ThreadId;
+    /// The running thread; None before the scheduler starts (boot code).
+    fn current_thread(&self) -> Option<ThreadId>;
 }
 
 pub trait SchedulePolicy {
@@ -88,8 +91,8 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
         });
     }
 
-    fn current_thread(&self) -> ThreadId {
-        unsafe { (*CURR_TCB).id }
+    fn current_thread(&self) -> Option<ThreadId> {
+        unsafe { CURR_TCB.as_ref().map(|tcb| tcb.id) }
     }
 
     fn tick(&mut self) {
@@ -112,14 +115,17 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
         });
     }
 
-    fn sleep(&mut self, ms: u32) {
+    fn sleep(&mut self, ms: u32) -> bool {
         critical_section::with(|_| {
-            let current = unsafe { &mut *CURR_TCB };
+            let Some(current) = (unsafe { CURR_TCB.as_mut() }) else {
+                return false;
+            };
             current.sleep_ms = ms;
             current.state = ThreadState::Sleeping;
             let current_id = current.id;
             self.sleep_list.push(current_id);
-        });
+            true
+        })
     }
 
     fn remove_thread(&mut self, thread: ThreadId) {
@@ -139,8 +145,9 @@ impl<P: SchedulePolicy> Scheduler for SchedulerCore<P> {
 
     fn block(&mut self) {
         critical_section::with(|_| {
-            let current = unsafe { &mut *CURR_TCB };
-            current.state = ThreadState::Blocked;
+            if let Some(current) = unsafe { CURR_TCB.as_mut() } {
+                current.state = ThreadState::Blocked;
+            }
         });
     }
 

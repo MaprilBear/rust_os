@@ -325,6 +325,7 @@ pub extern "C" fn memmanage_handler() {
     let cfsr = unsafe { core::ptr::read_volatile(0xE000_ED28 as *const u32) };
     let mmfar = unsafe { core::ptr::read_volatile(0xE000_ED34 as *const u32) };
     dprintln!("MemManage: CFSR={:#x} MMFAR={:#x}", cfsr, mmfar);
+    #[allow(clippy::empty_loop)]
     loop {}
 }
 
