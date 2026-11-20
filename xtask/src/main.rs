@@ -6,6 +6,7 @@
 //! by hand.
 
 mod elf;
+mod hw;
 mod placement;
 
 use std::env;
@@ -85,6 +86,14 @@ const COMMANDS: &[Cmd] = &[
                 first..first+n (default 1..=20) at each CPU speed in the comma list\n    \
                 (default `default,10,50`); prints every failing seed and speed",
         run: stress,
+    },
+    Cmd {
+        name: "test-hw",
+        usage: "test-hw [--seed <n>] [--chip <name>] [--probe <selector>] [--timeout <s>]\n    \
+                [-- <image>...]\n    \
+                the on-target suites on an nRF52840-DK through probe-rs (RTT): every\n    \
+                tests-target image, or only those named after --",
+        run: test_hw,
     },
     Cmd {
         name: "test",
@@ -177,6 +186,13 @@ fn test_host(args: &[String]) -> Result {
         cmd.arg("--").args(&opts.passthrough);
     }
     run(&mut cmd)?;
+
+    // xtask's own tests (placement parser, hardware-runner logic).
+    let mut xtask = cargo();
+    xtask
+        .args(["test", "--target", "host-tuple", "--manifest-path"])
+        .arg(root().join("xtask/Cargo.toml"));
+    run(&mut xtask)?;
 
     // The kernel again as on-target test images build it (feature `ktest`:
     // faulting threads are parked, expected faults).
@@ -335,6 +351,119 @@ fn stress(args: &[String]) -> Result {
     ])
 }
 
+fn test_hw(args: &[String]) -> Result {
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let opts = Opts::parse(args, &[], &["--seed", "--chip", "--probe", "--timeout"])?;
+    let seed = opts.value("--seed").unwrap_or("1");
+    match seed.parse::<u32>() {
+        Ok(s) if s != 0 => {}
+        _ => return Err(format!("--seed {seed}: a non-zero 32-bit number")),
+    }
+    let chip = opts.value("--chip").unwrap_or("nRF52840_xxAA");
+    let timeout: u64 = opts
+        .value("--timeout")
+        .unwrap_or("120")
+        .parse()
+        .map_err(|e| format!("--timeout: {e}"))?;
+    let probe_rs = || {
+        let mut cmd = Command::new("probe-rs");
+        // No HardFault vector catch: the kernel's handler must run, to
+        // print `KTEST ABORT` (probe-rs-tools 0.30 has the flag).
+        cmd.args(["run", "--no-catch-hardfault", "--chip", chip]);
+        if let Some(p) = opts.value("--probe") {
+            cmd.args(["--probe", p]);
+        }
+        cmd
+    };
+    if Command::new("probe-rs").arg("--version").output().is_err() {
+        return Err("probe-rs not found: `cargo install --locked probe-rs-tools`".into());
+    }
+
+    // KTEST lines over RTT; the seed compiled in (no debugger memory writes).
+    let images = build_images_env(
+        &[
+            "-p".into(),
+            SUITES_PACKAGE.into(),
+            "--bins".into(),
+            "--no-default-features".into(),
+            "--features".into(),
+            "rtt".into(),
+        ],
+        &[("KTEST_SEED", seed)],
+    )?;
+    let selected: Vec<&Firmware> = images
+        .iter()
+        .filter(|i| opts.passthrough.is_empty() || opts.passthrough.contains(&i.name))
+        .collect();
+
+    let mut failures = Vec::new();
+    for image in selected {
+        let expect = hw::expectation(&image.name);
+        if let hw::Expect::Skip(why) = expect {
+            eprintln!("== {}: skipped ({why})", image.name);
+            continue;
+        }
+        eprintln!("== {}", image.name);
+        let mut cmd = probe_rs();
+        cmd.arg(&image.elf)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        let shown = prepare(&mut cmd);
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("cannot run `{shown}`: {e}"))?;
+        let stdout = child.stdout.take().expect("piped");
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(timeout);
+        let end = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line = match rx.recv_timeout(left) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) => break hw::End::Silent,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break hw::End::ProbeExited,
+            };
+            match hw::parse(&line) {
+                Some(hw::Event::Done { pass, fail }) => {
+                    println!("{line}");
+                    break hw::End::Done { pass, fail };
+                }
+                Some(hw::Event::Abort(why)) => {
+                    println!("{line}");
+                    break hw::End::Abort(why.to_string());
+                }
+                Some(_) => println!("{line}"),
+                None => {}
+            }
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Err(e) = hw::verdict(expect, &end) {
+            eprintln!("== {}: FAILED: {e}", image.name);
+            failures.push(format!("{}: {e}", image.name));
+        }
+    }
+    if failures.is_empty() {
+        eprintln!("test-hw: all images passed (seed {seed})");
+        Ok(())
+    } else {
+        Err(format!(
+            "{} image(s) failed (seed {seed}):\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        ))
+    }
+}
+
 fn test_all(args: &[String]) -> Result {
     Opts::parse(args, &[], &[])?;
     test_host(&[])?;
@@ -455,7 +584,13 @@ fn build_suite_images() -> Result<Vec<Firmware>> {
 /// paths come from cargo's own build messages, so they are right for any
 /// profile, feature set, target dir or build dir.
 fn build_images(cargo_args: &[String]) -> Result<Vec<Firmware>> {
+    build_images_env(cargo_args, &[])
+}
+
+/// [`build_images`] with extra environment variables for the build.
+fn build_images_env(cargo_args: &[String], envs: &[(&str, &str)]) -> Result<Vec<Firmware>> {
     let mut cmd = cargo();
+    cmd.envs(envs.iter().copied());
     cmd.args(["build", "--message-format=json-render-diagnostics"])
         .args(cargo_args)
         .stdout(Stdio::piped());
