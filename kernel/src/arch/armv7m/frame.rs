@@ -75,3 +75,37 @@ mod tests {
         assert!(stack[..sp].iter().all(|&w| w == 0xAAAA_AAAA));
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::{init_stack, INITIAL_FRAME_WORDS};
+    use proptest::prelude::*;
+    use std::vec;
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: if cfg!(miri) { 8 } else { 256 },
+            failure_persistence: if cfg!(miri) {
+                None
+            } else {
+                proptest::prelude::ProptestConfig::default().failure_persistence
+            },
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn frame_is_always_the_top_16_words(
+            len in INITIAL_FRAME_WORDS..512,
+            entry in any::<u32>(),
+            fill in any::<u32>(),
+        ) {
+            let mut stack = vec![fill; len];
+            let sp = init_stack(&mut stack, entry as usize);
+            prop_assert_eq!(sp, len - INITIAL_FRAME_WORDS);
+            prop_assert_eq!(stack[len - 2], entry | 1);
+            prop_assert_eq!(stack[len - 1], 1 << 24);
+            prop_assert_eq!(stack[len - 3], 0xFFFF_FFFF);
+            prop_assert!(stack[..len - 3].iter().all(|&w| w == fill));
+        }
+    }
+}

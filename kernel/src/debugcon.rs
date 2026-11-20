@@ -86,6 +86,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "72k locked writes take minutes under Miri; no unsafe code"
+    )]
     fn log_is_capped_at_64_kib() {
         let _k = lock();
         let line = [b'x'; 1023];

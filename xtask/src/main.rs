@@ -57,6 +57,19 @@ const COMMANDS: &[Cmd] = &[
         run: test_loom,
     },
     Cmd {
+        name: "miri",
+        usage: "miri [-- <test binary args>]\n    \
+                the host tests of kernel, userlib and drivers under Miri (nightly)",
+        run: miri,
+    },
+    Cmd {
+        name: "fuzz",
+        usage: "fuzz [<target>] [--time <seconds>] [-- <libFuzzer args>]\n    \
+                coverage-guided fuzzing (cargo-fuzz, nightly); default target\n    \
+                `syscalls`, 60 s. Crashes land in fuzz/artifacts/<target>/",
+        run: fuzz,
+    },
+    Cmd {
         name: "test-renode",
         usage: "test-renode [-- <renode-test args> <suite.robot>...]\n    \
                 build (debug) and run the Robot suites in Renode: renode/*.robot and\n    \
@@ -76,7 +89,7 @@ const COMMANDS: &[Cmd] = &[
     },
     Cmd {
         name: "fmt",
-        usage: "fmt [--check]\n    rustfmt the workspace and xtask",
+        usage: "fmt [--check]\n    rustfmt the workspace, xtask and fuzz",
         run: fmt,
     },
 ];
@@ -169,6 +182,52 @@ fn test_loom(args: &[String]) -> Result {
         cmd.arg("--").args(&opts.passthrough);
     }
     run(&mut cmd)
+}
+
+/// Toolchain for Miri and cargo-fuzz, pinned so results do not change under
+/// us. Keep in sync with the Dockerfile.
+const NIGHTLY: &str = "+nightly-2026-11-19";
+
+fn miri(args: &[String]) -> Result {
+    let opts = Opts::parse(args, &[], &[])?;
+    // `cargo +nightly` needs rustup's proxy, not the stable cargo in $CARGO.
+    let mut cmd = Command::new("cargo");
+    cmd.args([NIGHTLY, "miri", "test", "--no-fail-fast", "--all-targets"])
+        .args(["--target", &host_triple()?]);
+    for krate in HOST_TEST_CRATES {
+        cmd.args(["-p", krate]);
+    }
+    if !opts.passthrough.is_empty() {
+        cmd.arg("--").args(&opts.passthrough);
+    }
+    run(&mut cmd)
+}
+
+fn fuzz(args: &[String]) -> Result {
+    // An optional target name first, then options.
+    let (target, rest) = match args.first() {
+        Some(t) if !t.starts_with('-') => (t.as_str(), &args[1..]),
+        _ => ("syscalls", args),
+    };
+    let opts = Opts::parse(rest, &[], &["--time"])?;
+    let secs = opts.value("--time").unwrap_or("60");
+    let mut cmd = Command::new("cargo");
+    cmd.args([NIGHTLY, "fuzz", "run", "--fuzz-dir", "fuzz", target, "--"])
+        .arg(format!("-max_total_time={secs}"))
+        .args(&opts.passthrough);
+    run(&mut cmd)
+}
+
+/// The host's target triple, from `rustc -vV`.
+fn host_triple() -> Result<String> {
+    let out = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| format!("cannot run rustc: {e}"))?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("host: ").map(str::to_string))
+        .ok_or_else(|| "rustc -vV printed no host triple".into())
 }
 
 fn test_renode(args: &[String]) -> Result {
@@ -265,7 +324,11 @@ fn clippy(args: &[String]) -> Result {
 
 fn fmt(args: &[String]) -> Result {
     let opts = Opts::parse(args, &["--check"], &[])?;
-    for manifest in [None, Some(root().join("xtask/Cargo.toml"))] {
+    for manifest in [
+        None,
+        Some(root().join("xtask/Cargo.toml")),
+        Some(root().join("fuzz/Cargo.toml")),
+    ] {
         let mut cmd = cargo();
         cmd.arg("fmt");
         match manifest {

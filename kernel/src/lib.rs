@@ -26,6 +26,8 @@ pub mod debugcon;
 
 mod arch;
 mod irq;
+#[cfg(test)]
+mod model_tests;
 mod scheduler;
 pub mod semaphore;
 mod simple_list;

@@ -228,3 +228,93 @@ mod tests {
         let _ = &list[0];
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::SimpleList;
+    use proptest::prelude::*;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Push(u8),
+        /// Remove the n-th occupied slot (removing an empty one is known
+        /// issue 1, tested separately).
+        RemoveOccupied(usize),
+        RemoveOutOfRange(usize),
+        /// Keep items whose bit in the mask is set.
+        Retain(u8),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            3 => any::<u8>().prop_map(Op::Push),
+            2 => any::<usize>().prop_map(Op::RemoveOccupied),
+            1 => (0usize..8).prop_map(Op::RemoveOutOfRange),
+            1 => any::<u8>().prop_map(Op::Retain),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: if cfg!(miri) { 8 } else { 256 },
+            failure_persistence: if cfg!(miri) {
+                None
+            } else {
+                proptest::prelude::ProptestConfig::default().failure_persistence
+            },
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        /// SimpleList behaves like a Vec<Option<T>> that fills the first hole.
+        #[test]
+        fn matches_a_vec_of_options(ops in proptest::collection::vec(op(), 0..64)) {
+            let mut list = SimpleList::new();
+            let mut model: Vec<Option<u8>> = Vec::new();
+            for op in ops {
+                match op {
+                    Op::Push(v) => {
+                        let at = model.iter().position(Option::is_none).unwrap_or(model.len());
+                        if at == model.len() {
+                            model.push(None);
+                        }
+                        model[at] = Some(v);
+                        prop_assert_eq!(list.push(v), at);
+                    }
+                    Op::RemoveOccupied(n) => {
+                        let occupied: Vec<usize> =
+                            (0..model.len()).filter(|&i| model[i].is_some()).collect();
+                        if !occupied.is_empty() {
+                            let i = occupied[n % occupied.len()];
+                            model[i] = None;
+                            list.remove(i);
+                        }
+                    }
+                    Op::RemoveOutOfRange(extra) => list.remove(model.len() + extra),
+                    Op::Retain(mask) => {
+                        for (i, slot) in model.iter_mut().enumerate() {
+                            if mask & (1 << (i % 8)) == 0 {
+                                *slot = None;
+                            }
+                        }
+                        let mut i = 0;
+                        // retain visits occupied slots in index order.
+                        let keep: Vec<bool> = list
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| s.is_some())
+                            .map(|(j, _)| mask & (1 << (j % 8)) != 0)
+                            .collect();
+                        list.retain(|_| {
+                            i += 1;
+                            keep[i - 1]
+                        });
+                    }
+                }
+                prop_assert_eq!(list.iter().copied().collect::<Vec<_>>(), model.clone());
+                prop_assert_eq!(list.len(), model.iter().flatten().count());
+                prop_assert_eq!(list.slot_len(), model.len());
+            }
+        }
+    }
+}

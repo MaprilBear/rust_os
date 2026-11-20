@@ -354,3 +354,59 @@ mod tests {
         assert!(!user_can_write(buf.as_ptr() as usize, buf.len()));
     }
 }
+
+#[cfg(test)]
+mod props {
+    use super::in_range;
+    use proptest::prelude::*;
+
+    /// The definition, in arithmetic that cannot overflow.
+    fn reference(ptr: usize, len: usize, start: usize, end: usize) -> bool {
+        let (p, l, s, e) = (ptr as u128, len as u128, start as u128, end as u128);
+        s <= e && p >= s && p + l <= e
+    }
+
+    /// Mostly values near the region's edges, where the bugs would be.
+    fn near(edge: usize) -> impl Strategy<Value = usize> {
+        prop_oneof![
+            (0usize..64).prop_map(move |d| edge.wrapping_add(d)),
+            (0usize..64).prop_map(move |d| edge.wrapping_sub(d)),
+            any::<usize>(),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: if cfg!(miri) { 8 } else { 256 },
+            failure_persistence: if cfg!(miri) {
+                None
+            } else {
+                proptest::prelude::ProptestConfig::default().failure_persistence
+            },
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn in_range_matches_its_definition(
+            (start, end) in (any::<usize>(), any::<usize>())
+                .prop_map(|(a, b)| (a.min(b), a.max(b))),
+            ptr_sel in any::<(bool, usize)>(),
+            len in prop_oneof![0usize..256, any::<usize>()],
+        ) {
+            let base = if ptr_sel.0 { start } else { end };
+            let ptr = base.wrapping_add(ptr_sel.1 % 512).wrapping_sub(256);
+            prop_assert_eq!(in_range(ptr, len, start..end), reference(ptr, len, start, end));
+        }
+
+        #[test]
+        fn in_range_near_the_edges(
+            start in near(0x2000_0000),
+            size in 0usize..0x1000,
+            ptr in near(0x2000_0000),
+            len in 0usize..0x2000,
+        ) {
+            let end = start.saturating_add(size);
+            prop_assert_eq!(in_range(ptr, len, start..end), reference(ptr, len, start, end));
+        }
+    }
+}

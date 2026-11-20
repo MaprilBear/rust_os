@@ -214,6 +214,27 @@ pub fn register_semaphore(sem: &userlib::Semaphore) {
     port::register_ksem(sem.handle());
 }
 
+/// Put `sem` back in its initial state without registering its handle, for
+/// tests that make the kernel accept handles through [`set_ksem_range`]
+/// (the real check) instead.
+pub fn reset_semaphore(sem: &userlib::Semaphore) {
+    assert_owner();
+    // Safety: as in `register_semaphore`.
+    unsafe { semaphore::reset_object(sem.handle()) };
+}
+
+/// Count and waiters (oldest first) of `sem`, for checking against a model.
+pub fn semaphore_state(sem: &userlib::Semaphore) -> (isize, std::vec::Vec<ThreadId>) {
+    assert_owner();
+    // Safety: as in `register_semaphore`.
+    unsafe { semaphore::snapshot(sem.handle()) }
+}
+
+/// Priority of thread `id`, or None if there is no such thread.
+pub fn thread_priority(id: ThreadId) -> Option<u8> {
+    unsafe { scheduler().tcb(id).map(|t| t.priority) }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Fake port
 ///////////////////////////////////////////////////////////////////////////////////////////////////

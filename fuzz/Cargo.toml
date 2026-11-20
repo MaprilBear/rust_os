@@ -1,0 +1,31 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Coverage-guided fuzzing of the kernel on the host (cargo-fuzz, nightly):
+# `cargo xtask fuzz`. Not part of the firmware workspace (see the root
+# Cargo.toml); the empty [workspace] table makes it its own.
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+kernel = { path = "../kernel", features = ["test-support"] }
+userlib = { path = "../userlib" }
+
+# Symbols in crash backtraces.
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "syscalls"
+path = "fuzz_targets/syscalls.rs"
+test = false
+doc = false
+bench = false

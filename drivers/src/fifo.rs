@@ -273,7 +273,8 @@ mod tests {
     #[test]
     fn producer_and_consumer_threads_transfer_everything_in_order() {
         static F: Spsc = Spsc(Fifo::new(LockFreePolicy::new()));
-        const N: u32 = 100_000;
+        // Miri is ~100x slower; a few hundred items still wrap many times.
+        const N: u32 = if cfg!(miri) { 300 } else { 100_000 };
         let producer = std::thread::spawn(|| {
             for i in 0..N {
                 while F.0.push(i).is_err() {
@@ -369,5 +370,75 @@ mod loom_tests {
             let mine = f.0.pop().is_ok() as u32;
             assert_eq!(mine + other.join().unwrap(), 1, "42 received twice");
         });
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod props {
+    extern crate std;
+
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::VecDeque;
+    use std::vec::Vec;
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Push(u8),
+        Pop,
+        PopInto(usize),
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            4 => any::<u8>().prop_map(Op::Push),
+            3 => Just(Op::Pop),
+            1 => (0usize..10).prop_map(Op::PopInto),
+        ]
+    }
+
+    /// Run `ops` on a FIFO with an `S`-slot buffer and on a VecDeque bounded
+    /// to `S - 1` items.
+    fn check<const S: usize>(ops: &[Op]) -> Result<(), TestCaseError> {
+        let f = Fifo::<u8, S, LockFreePolicy>::new(LockFreePolicy::new());
+        let mut model = VecDeque::new();
+        for op in ops {
+            match *op {
+                Op::Push(v) => {
+                    let fits = model.len() < S - 1;
+                    if fits {
+                        model.push_back(v);
+                    }
+                    prop_assert_eq!(f.push(v).is_ok(), fits);
+                }
+                Op::Pop => prop_assert_eq!(f.pop().ok(), model.pop_front()),
+                Op::PopInto(n) => {
+                    let mut out = std::vec![0u8; n];
+                    let got = f.pop_into(&mut out);
+                    let want: Vec<u8> = (0..n).map_while(|_| model.pop_front()).collect();
+                    prop_assert_eq!(&out[..got], &want[..]);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            cases: if cfg!(miri) { 8 } else { 256 },
+            failure_persistence: if cfg!(miri) {
+                None
+            } else {
+                proptest::prelude::ProptestConfig::default().failure_persistence
+            },
+            ..proptest::prelude::ProptestConfig::default()
+        })]
+
+        #[test]
+        fn matches_a_bounded_queue(ops in proptest::collection::vec(op(), 0..200)) {
+            check::<2>(&ops)?;
+            check::<3>(&ops)?;
+            check::<8>(&ops)?;
+        }
     }
 }
