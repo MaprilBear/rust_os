@@ -214,6 +214,18 @@ pub fn register_semaphore(sem: &userlib::Semaphore) {
     port::register_ksem(sem.handle());
 }
 
+/// Count and waiters (oldest first) of `sem`, for checking against a model.
+pub fn semaphore_state(sem: &userlib::Semaphore) -> (isize, std::vec::Vec<ThreadId>) {
+    assert_owner();
+    // Safety: as in `register_semaphore`.
+    unsafe { semaphore::snapshot(sem.handle()) }
+}
+
+/// Priority of thread `id`, or None if there is no such thread.
+pub fn thread_priority(id: ThreadId) -> Option<u8> {
+    unsafe { scheduler().tcb(id).map(|t| t.priority) }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Fake port
 ///////////////////////////////////////////////////////////////////////////////////////////////////

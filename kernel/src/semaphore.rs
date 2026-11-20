@@ -167,6 +167,20 @@ pub fn give_from_isr(sem: &userlib::Semaphore) {
     }
 }
 
+/// Test support: the count and waiters (oldest first) of the semaphore
+/// behind `handle`.
+///
+/// # Safety
+/// `handle` must come from a `userlib::Semaphore` created by `semaphore!`.
+#[cfg(all(not(target_os = "none"), any(test, feature = "test-support")))]
+pub(crate) unsafe fn snapshot(handle: usize) -> (isize, alloc::vec::Vec<ThreadId>) {
+    let sem = &*(handle as *const KSemaphore);
+    critical_section::with(|_| {
+        let st = &*sem.state.get();
+        (st.count, st.waiters.iter().copied().collect())
+    })
+}
+
 /// Test support: put the semaphore behind `handle` back in its initial state
 /// (initial count, no waiters).
 ///
