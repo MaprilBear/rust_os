@@ -70,6 +70,16 @@ impl<T> Mmio<T> {
         Self(addr as *const T) // int->ptr cast is fine in const; deref is not
     }
 
+    /// Like `new`, from a pointer, which keeps its provenance (host tests
+    /// over register blocks in RAM run under Miri's strict provenance).
+    ///
+    /// # Safety
+    /// As for `new`.
+    #[cfg(test)]
+    pub(crate) const unsafe fn from_ptr(ptr: *const T) -> Self {
+        Self(ptr)
+    }
+
     pub const fn as_ptr(&self) -> *const T {
         self.0
     }
@@ -80,5 +90,77 @@ impl<T> Deref for Mmio<T> {
     fn deref(&self) -> &T {
         // Sound by the contract on `new`; evaluated at runtime, not in const.
         unsafe { &*self.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::size_of;
+
+    fn reg<A>(v: u32) -> Reg<u32, A> {
+        Reg(UnsafeCell::new(v), PhantomData)
+    }
+    fn raw<A>(r: &Reg<u32, A>) -> u32 {
+        unsafe { *r.0.get() }
+    }
+
+    #[test]
+    fn registers_are_one_word() {
+        assert_eq!(size_of::<Reg<u32, Rw>>(), 4);
+        assert_eq!(size_of::<Task>(), 4);
+        assert_eq!(size_of::<Event>(), 4);
+    }
+
+    #[test]
+    fn reg_reads_and_writes_the_word() {
+        let r = reg::<Rw>(0x1234);
+        assert_eq!(r.read(), 0x1234);
+        r.write(0xDEAD_BEEF);
+        assert_eq!(r.read(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn task_trigger_writes_one() {
+        let t = Task(reg(0));
+        t.trigger();
+        assert_eq!(raw(&t.0), 1);
+    }
+
+    #[test]
+    fn event_looks_only_at_bit_0_and_clear_writes_zero() {
+        let e = Event(reg(0));
+        assert!(!e.generated());
+        e.0.write(1);
+        assert!(e.generated());
+        e.0.write(0xFFFF_FFFE);
+        assert!(!e.generated(), "only bit 0 is the event");
+        e.0.write(1);
+        e.clear();
+        assert_eq!(raw(&e.0), 0);
+    }
+
+    #[test]
+    fn count_fields_keep_their_width() {
+        assert_eq!(
+            Count16Builder::new().with_count(0xFFFF).build().into_bits(),
+            0xFFFF
+        );
+        assert_eq!(Count16::from_bits(0xABCD_1234).count(), 0x1234);
+        assert_eq!(
+            Count4Builder::new().with_count(0xF).build().into_bits(),
+            0xF
+        );
+        assert_eq!(Count4::from_bits(0xFFFF_FFF5).count(), 5);
+    }
+
+    #[test]
+    fn mmio_derefs_to_the_block_at_its_address() {
+        let block = reg::<Rw>(7);
+        let m: Mmio<Reg<u32, Rw>> = unsafe { Mmio::from_ptr(&block) };
+        assert_eq!(m.as_ptr(), &block as *const _);
+        assert_eq!(m.read(), 7);
+        m.write(9);
+        assert_eq!(block.read(), 9);
     }
 }
